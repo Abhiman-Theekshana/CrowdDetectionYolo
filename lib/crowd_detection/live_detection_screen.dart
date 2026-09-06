@@ -1,11 +1,8 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:camera/camera.dart';
+import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 import 'person_tracker.dart';
 import 'line_crossing.dart';
 import 'yolo_detector.dart';
-import 'frame_preprocessor.dart';
-import 'camera_service.dart';
 
 class LiveDetectionScreen extends StatefulWidget {
   const LiveDetectionScreen({super.key});
@@ -15,83 +12,54 @@ class LiveDetectionScreen extends StatefulWidget {
 }
 
 class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
-  final CameraService _cameraService = CameraService();
   final YoloDetector _detector = YoloDetector();
-  late PersonTracker _tracker;
+  final PersonTracker _tracker = PersonTracker();
   late LineCrossingDetector _crossingDetector;
 
-  bool _isDetecting = false;
-  bool _isProcessingFrame = false;
-  int _frameCount = 0;
   String _selectedDoor = 'Front';
   List<Detection> _latestDetections = [];
+  final bool _showOverlays = false;
 
   @override
   void initState() {
     super.initState();
-    _tracker = PersonTracker();
     _crossingDetector = LineCrossingDetector(tracker: _tracker);
-    _initialize();
+    _detector.loadModel();
   }
 
-  Future<void> _initialize() async {
-    await _detector.loadModel();
-    await _cameraService.initializeCameras();
-    await _cameraService.startCamera();
+  void _onResult(List<YOLOResult> results) {
+    final detections = results
+        .map((r) => Detection(
+              left: r.boundingBox.left,
+              top: r.boundingBox.top,
+              right: r.boundingBox.right,
+              bottom: r.boundingBox.bottom,
+              confidence: r.confidence,
+              classId: r.classIndex,
+            ))
+        .where((d) => d.confidence > 0.4)
+        .toList();
 
-    if (mounted) setState(() {});
+    _tracker.update(detections);
+    _crossingDetector.processFrame();
 
-    _startDetection();
-  }
-
-  void _startDetection() {
-    _isDetecting = true;
-    _cameraService.imageStream.listen((CameraFrame frame) {
-      if (!_isDetecting || _isProcessingFrame) return;
-
-      _frameCount++;
-      if (_frameCount % 3 != 0) return;
-
-      _processFrame(frame);
-    });
-  }
-
-  Future<void> _processFrame(CameraFrame frame) async {
-    _isProcessingFrame = true;
-
-    try {
-      final input = FramePreprocessor.preprocessRgb(
-        frame.bytes,
-        frame.width,
-        frame.height,
-      );
-      final detections = _detector.runInference(input, 320, 320);
-
-      _tracker.update(detections);
-      _crossingDetector.processFrame();
-
-      _latestDetections = detections;
-
-      if (mounted) {
-        setState(() {});
-      }
-    } catch (e, stack) {
-      debugPrint('Frame processing error: $e\n$stack');
-    } finally {
-      _isProcessingFrame = false;
+    if (mounted) {
+      setState(() {
+        _latestDetections = detections;
+      });
     }
   }
 
   void _resetCounters() {
     _tracker.reset();
     _crossingDetector.reset();
-    _latestDetections = [];
-    setState(() {});
+    setState(() {
+      _latestDetections = [];
+    });
   }
 
   @override
   void dispose() {
-    _cameraService.dispose();
     _detector.dispose();
     super.dispose();
   }
@@ -103,17 +71,15 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          if (_cameraService.isInitialized)
-            Center(
-              child: AspectRatio(
-                aspectRatio: _cameraService.controller!.value.aspectRatio,
-                child: CameraPreview(_cameraService.controller!),
-              ),
-            )
-          else
-            const Center(
-              child: CircularProgressIndicator(color: Colors.white),
-            ),
+          YOLOView(
+            modelPath: 'assets/models/best.onnx',
+            task: YOLOTask.detect,
+            confidenceThreshold: 0.4,
+            iouThreshold: 0.5,
+            useGpu: false,
+            showOverlays: _showOverlays,
+            onResult: _onResult,
+          ),
 
           CustomPaint(
             size: Size.infinite,

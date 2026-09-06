@@ -6,7 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:video_player/video_player.dart';
-import 'frame_preprocessor.dart';
+import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 import 'yolo_detector.dart';
 import 'person_tracker.dart';
 import 'line_crossing.dart';
@@ -20,9 +20,9 @@ class VideoUploadScreen extends StatefulWidget {
 
 class _VideoUploadScreenState extends State<VideoUploadScreen> {
   final GlobalKey _videoKey = GlobalKey();
-  final YoloDetector _detector = YoloDetector();
   final PersonTracker _tracker = PersonTracker();
   late LineCrossingDetector _crossingDetector;
+  YOLO? _yolo;
 
   VideoPlayerController? _videoController;
   String? _selectedVideoPath;
@@ -39,14 +39,13 @@ class _VideoUploadScreenState extends State<VideoUploadScreen> {
   void initState() {
     super.initState();
     _crossingDetector = LineCrossingDetector(tracker: _tracker);
-    _detector.loadModel();
   }
 
   @override
   void dispose() {
     _captureTimer?.cancel();
     _videoController?.dispose();
-    _detector.dispose();
+    _yolo?.dispose();
     super.dispose();
   }
 
@@ -301,6 +300,15 @@ class _VideoUploadScreenState extends State<VideoUploadScreen> {
   Future<void> _processVideo() async {
     if (_videoController == null || !_videoController!.value.isInitialized) return;
 
+    if (_yolo == null) {
+      _yolo = YOLO(
+        modelPath: 'assets/models/best.onnx',
+        task: YOLOTask.detect,
+        useGpu: false,
+      );
+      await _yolo!.loadModel();
+    }
+
     setState(() {
       _isProcessing = true;
       _progress = 0.0;
@@ -338,8 +346,21 @@ class _VideoUploadScreenState extends State<VideoUploadScreen> {
         final frameBytes = await _captureFrame();
         if (frameBytes != null) {
           try {
-            final input = FramePreprocessor.preprocessPng(frameBytes);
-            final detections = _detector.runInference(input, 320, 320);
+            final results = await _yolo!.predict(frameBytes);
+            final detectionsRaw = results['detections'] as List<dynamic>? ?? [];
+
+            final detections = detectionsRaw
+                .map((d) => Detection(
+                      left: (d['boundingBox']?['left'] as num?)?.toDouble() ?? 0,
+                      top: (d['boundingBox']?['top'] as num?)?.toDouble() ?? 0,
+                      right: (d['boundingBox']?['right'] as num?)?.toDouble() ?? 0,
+                      bottom: (d['boundingBox']?['bottom'] as num?)?.toDouble() ?? 0,
+                      confidence: (d['confidence'] as num?)?.toDouble() ?? 0,
+                      classId: (d['classIndex'] as num?)?.toInt() ?? 0,
+                    ))
+                .where((d) => d.confidence > 0.4)
+                .toList();
+
             _tracker.update(detections);
             _crossingDetector.processFrame();
           } catch (e) {
