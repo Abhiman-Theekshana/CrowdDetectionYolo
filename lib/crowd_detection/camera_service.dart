@@ -2,16 +2,23 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 
+class CameraFrame {
+  final Uint8List bytes;
+  final int width;
+  final int height;
+  CameraFrame({required this.bytes, required this.width, required this.height});
+}
+
 class CameraService {
   CameraController? _controller;
   List<CameraDescription> _cameras = [];
   bool _isInitialized = false;
-  StreamController<Uint8List>? _frameStreamController;
+  StreamController<CameraFrame>? _frameStreamController;
 
   CameraController? get controller => _controller;
   bool get isInitialized => _isInitialized;
 
-  Stream<Uint8List> get imageStream => _frameStreamController!.stream;
+  Stream<CameraFrame> get imageStream => _frameStreamController!.stream;
 
   Future<void> initializeCameras() async {
     _cameras = await availableCameras();
@@ -39,13 +46,17 @@ class CameraService {
     await _controller!.initialize();
     _isInitialized = true;
 
-    _frameStreamController = StreamController<Uint8List>.broadcast();
+    _frameStreamController = StreamController<CameraFrame>.broadcast();
 
     _controller!.startImageStream((CameraImage image) {
       if (_frameStreamController != null && !_frameStreamController!.isClosed) {
         final bytes = _convertCameraImage(image);
         if (bytes != null) {
-          _frameStreamController!.add(bytes);
+          _frameStreamController!.add(CameraFrame(
+            bytes: bytes,
+            width: image.width,
+            height: image.height,
+          ));
         }
       }
     });

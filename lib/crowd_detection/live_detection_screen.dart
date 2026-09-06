@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'person_tracker.dart';
@@ -47,24 +46,25 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
 
   void _startDetection() {
     _isDetecting = true;
-    _cameraService.imageStream.listen((Uint8List bytes) {
+    _cameraService.imageStream.listen((CameraFrame frame) {
       if (!_isDetecting || _isProcessingFrame) return;
 
       _frameCount++;
       if (_frameCount % 3 != 0) return;
 
-      _processFrame(bytes);
+      _processFrame(frame);
     });
   }
 
-  Future<void> _processFrame(Uint8List rgbBytes) async {
+  Future<void> _processFrame(CameraFrame frame) async {
     _isProcessingFrame = true;
 
     try {
-      final width = _cameraService.controller!.value.previewSize!.height.toInt();
-      final height = _cameraService.controller!.value.previewSize!.width.toInt();
-
-      final input = FramePreprocessor.preprocessRgb(rgbBytes, width, height);
+      final input = FramePreprocessor.preprocessRgb(
+        frame.bytes,
+        frame.width,
+        frame.height,
+      );
       final detections = _detector.runInference(input, 320, 320);
 
       _tracker.update(detections);
