@@ -13,6 +13,11 @@ class YoloDetector {
         'assets/models/best.tflite',
       );
       _isLoaded = true;
+
+      // DIAGNOSTIC — check console output
+      print('INPUT shape: ${_interpreter!.getInputTensor(0).shape}');
+      print('INPUT type: ${_interpreter!.getInputTensor(0).type}');
+      print('OUTPUT shape: ${_interpreter!.getOutputTensor(0).shape}');
     } catch (e) {
       print('Error loading model: $e');
       _isLoaded = false;
