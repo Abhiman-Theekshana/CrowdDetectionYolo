@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
-import 'package:ultralytics_yolo/ultralytics_yolo.dart';
+import 'package:camera/camera.dart';
 import 'person_tracker.dart';
 import 'line_crossing.dart';
 import 'yolo_detector.dart';
+import 'camera_service.dart';
 
 class LiveDetectionScreen extends StatefulWidget {
   const LiveDetectionScreen({super.key});
@@ -12,54 +14,93 @@ class LiveDetectionScreen extends StatefulWidget {
 }
 
 class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
+  final CameraService _cameraService = CameraService();
   final YoloDetector _detector = YoloDetector();
-  final PersonTracker _tracker = PersonTracker();
+  late PersonTracker _tracker;
   late LineCrossingDetector _crossingDetector;
 
+  bool _isDetecting = false;
+  bool _isProcessingFrame = false;
+  int _frameCount = 0;
   String _selectedDoor = 'Front';
   List<Detection> _latestDetections = [];
-  final bool _showOverlays = false;
+  String? _errorMessage;
 
   @override
   void initState() {
     super.initState();
+    _tracker = PersonTracker();
     _crossingDetector = LineCrossingDetector(tracker: _tracker);
-    _detector.loadModel();
+    _initialize();
   }
 
-  void _onResult(List<YOLOResult> results) {
-    final detections = results
-        .map((r) => Detection(
-              left: r.boundingBox.left,
-              top: r.boundingBox.top,
-              right: r.boundingBox.right,
-              bottom: r.boundingBox.bottom,
-              confidence: r.confidence,
-              classId: r.classIndex,
-            ))
-        .where((d) => d.confidence > 0.4)
-        .toList();
-
-    _tracker.update(detections);
-    _crossingDetector.processFrame();
-
-    if (mounted) {
+  Future<void> _initialize() async {
+    try {
+      await _detector.loadModel();
+    } catch (e) {
       setState(() {
-        _latestDetections = detections;
+        _errorMessage = 'Failed to load model: $e';
       });
+      return;
+    }
+
+    try {
+      await _cameraService.initializeCameras();
+      await _cameraService.startCamera();
+    } catch (e) {
+      setState(() {
+        _errorMessage = 'Failed to start camera: $e';
+      });
+      return;
+    }
+
+    if (mounted) setState(() {});
+    _startDetection();
+  }
+
+  void _startDetection() {
+    _isDetecting = true;
+    _cameraService.frameStream.listen((CameraFrame frame) {
+      if (!_isDetecting || _isProcessingFrame) return;
+
+      _frameCount++;
+      if (_frameCount % 3 != 0) return;
+
+      _processFrame(frame);
+    });
+  }
+
+  Future<void> _processFrame(CameraFrame frame) async {
+    _isProcessingFrame = true;
+
+    try {
+      final detections = _detector.runInference(frame.bytes);
+
+      _tracker.update(detections);
+      _crossingDetector.processFrame();
+
+      _latestDetections = detections;
+
+      if (mounted) {
+        setState(() {});
+      }
+    } catch (e) {
+      debugPrint('Frame processing error: $e');
+    } finally {
+      _isProcessingFrame = false;
     }
   }
 
   void _resetCounters() {
     _tracker.reset();
     _crossingDetector.reset();
-    setState(() {
-      _latestDetections = [];
-    });
+    _latestDetections = [];
+    setState(() {});
   }
 
   @override
   void dispose() {
+    _cameraService.dispose();
     _detector.dispose();
     super.dispose();
   }
@@ -71,15 +112,40 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          YOLOView(
-            modelPath: 'assets/models/best.tflite',
-            task: YOLOTask.detect,
-            confidenceThreshold: 0.4,
-            iouThreshold: 0.5,
-            useGpu: false,
-            showOverlays: _showOverlays,
-            onResult: _onResult,
-          ),
+          if (_errorMessage != null)
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(24),
+                margin: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.error, color: Colors.red, size: 48),
+                    const SizedBox(height: 16),
+                    Text(
+                      _errorMessage!,
+                      style: const TextStyle(color: Colors.red, fontSize: 16),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ),
+              ),
+            )
+          else if (_cameraService.isInitialized)
+            Center(
+              child: AspectRatio(
+                aspectRatio: _cameraService.controller!.value.aspectRatio,
+                child: CameraPreview(_cameraService.controller!),
+              ),
+            )
+          else
+            const Center(
+              child: CircularProgressIndicator(color: Colors.white),
+            ),
 
           CustomPaint(
             size: Size.infinite,

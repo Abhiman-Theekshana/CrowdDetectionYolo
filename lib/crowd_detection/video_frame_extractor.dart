@@ -1,28 +1,20 @@
-import 'dart:async';
 import 'dart:typed_data';
-import 'dart:ui' as ui;
-import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
-import 'package:video_player/video_player.dart';
+import 'package:video_thumbnail/video_thumbnail.dart';
 
 class VideoFrameExtractor {
-  final VideoPlayerController controller;
-  final GlobalKey repaintKey;
+  final String videoPath;
 
-  VideoFrameExtractor({
-    required this.controller,
-    required this.repaintKey,
-  });
+  VideoFrameExtractor({required this.videoPath});
 
-  Future<Uint8List?> captureCurrentFrame() async {
-    final boundary = repaintKey.currentContext?.findRenderObject()
-        as RenderRepaintBoundary?;
-    if (boundary == null) return null;
+  Future<Uint8List?> extractFrameAt(Duration position) async {
     try {
-      final image = await boundary.toImage(pixelRatio: 1.0);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      image.dispose();
-      return byteData?.buffer.asUint8List();
+      final thumbnail = await VideoThumbnail.thumbnailData(
+        video: videoPath,
+        imageFormat: ImageFormat.PNG,
+        timeMs: position.inMilliseconds,
+        quality: 100,
+      );
+      return thumbnail;
     } catch (e) {
       return null;
     }

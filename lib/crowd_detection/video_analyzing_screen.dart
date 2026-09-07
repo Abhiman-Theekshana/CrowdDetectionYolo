@@ -1,14 +1,11 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:video_player/video_player.dart';
-import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 import '../models/analysis_log_entry.dart';
 import '../models/frame_analysis_result.dart';
 import 'yolo_detector.dart';
+import 'video_frame_extractor.dart';
 import 'person_tracker.dart';
 import 'line_crossing.dart';
 import 'video_results_screen.dart';
@@ -28,14 +25,14 @@ class VideoAnalyzingScreen extends StatefulWidget {
 }
 
 class _VideoAnalyzingScreenState extends State<VideoAnalyzingScreen> {
-  final GlobalKey _repaintKey = GlobalKey();
   final List<AnalysisLogEntry> _logEntries = [];
   final List<FrameAnalysisResult> _frameResults = [];
   final PersonTracker _tracker = PersonTracker();
   late LineCrossingDetector _crossingDetector;
 
   VideoPlayerController? _videoController;
-  YOLO? _yolo;
+  YoloDetector? _detector;
+  VideoFrameExtractor? _frameExtractor;
 
   bool _isAnalyzing = false;
   bool _isComplete = false;
@@ -59,7 +56,7 @@ class _VideoAnalyzingScreenState extends State<VideoAnalyzingScreen> {
   @override
   void dispose() {
     _videoController?.dispose();
-    _yolo?.dispose();
+    _detector?.dispose();
     super.dispose();
   }
 
@@ -101,12 +98,8 @@ class _VideoAnalyzingScreenState extends State<VideoAnalyzingScreen> {
     // Step 2: Load YOLO model
     _addLog('Loading YOLO model...');
     try {
-      _yolo = YOLO(
-        modelPath: 'assets/models/best.tflite',
-        task: YOLOTask.detect,
-        useGpu: false,
-      );
-      await _yolo!.loadModel();
+      _detector = YoloDetector();
+      await _detector!.loadModel();
       _addLog('Model loaded successfully');
     } catch (e) {
       _addLog('ERROR at model loading: $e', isError: true);
@@ -124,14 +117,13 @@ class _VideoAnalyzingScreenState extends State<VideoAnalyzingScreen> {
     _addLog('Extracting frames from video (interval: every ${_frameInterval.inMilliseconds}ms)...');
     _addLog('Total frames to analyze: $_totalFrames');
 
-    // Step 4: Analyze each frame
+    // Step 4: Initialize frame extractor
+    _frameExtractor = VideoFrameExtractor(videoPath: widget.videoPath);
+
+    // Step 5: Analyze each frame
     setState(() {
       _currentFrame = 0;
     });
-
-    _videoController!.seekTo(Duration.zero);
-    await Future.delayed(const Duration(milliseconds: 300));
-    _videoController!.play();
 
     for (int i = 0; i < _totalFrames; i++) {
       if (!_isAnalyzing) break;
@@ -143,39 +135,21 @@ class _VideoAnalyzingScreenState extends State<VideoAnalyzingScreen> {
       _addLog('Analyzing frame ${i + 1}/$_totalFrames...');
 
       try {
-        // Seek to the frame position
         final position = Duration(milliseconds: i * _frameInterval.inMilliseconds);
-        await _videoController!.seekTo(position);
-        await Future.delayed(const Duration(milliseconds: 100));
+        final frameBytes = await _frameExtractor!.extractFrameAt(position);
 
-        // Capture frame
-        final frameBytes = await _captureFrame();
         if (frameBytes == null) {
           _frameResults.add(FrameAnalysisResult(
             frameNumber: i + 1,
             detections: [],
-            error: 'Failed to capture frame',
+            error: 'Failed to extract frame',
           ));
           _framesFailed++;
-          _addLog('Frame ${i + 1}: Failed to capture frame', isError: true);
+          _addLog('Frame ${i + 1}: Failed to extract frame', isError: true);
           continue;
         }
 
-        // Run inference
-        final results = await _yolo!.predict(frameBytes);
-        final detectionsRaw = results['detections'] as List<dynamic>? ?? [];
-
-        final detections = detectionsRaw
-            .map((d) => Detection(
-                  left: (d['boundingBox']?['left'] as num?)?.toDouble() ?? 0,
-                  top: (d['boundingBox']?['top'] as num?)?.toDouble() ?? 0,
-                  right: (d['boundingBox']?['right'] as num?)?.toDouble() ?? 0,
-                  bottom: (d['boundingBox']?['bottom'] as num?)?.toDouble() ?? 0,
-                  confidence: (d['confidence'] as num?)?.toDouble() ?? 0,
-                  classId: (d['classIndex'] as num?)?.toInt() ?? 0,
-                ))
-            .where((d) => d.confidence > 0.4)
-            .toList();
+        final detections = _detector!.runInference(frameBytes);
 
         _frameResults.add(FrameAnalysisResult(
           frameNumber: i + 1,
@@ -209,7 +183,7 @@ class _VideoAnalyzingScreenState extends State<VideoAnalyzingScreen> {
       if (mounted) setState(() {});
     }
 
-    // Step 5: Analysis complete
+    // Step 6: Analysis complete
     _addLog('Analysis complete: $_totalFrames processed, $_totalDetections total detections');
     _addLog('Frames succeeded: $_framesSucceeded, Frames failed: $_framesFailed');
 
@@ -217,29 +191,12 @@ class _VideoAnalyzingScreenState extends State<VideoAnalyzingScreen> {
       _isAnalyzing = false;
       _isComplete = true;
     });
-
-    _videoController?.pause();
-  }
-
-  Future<Uint8List?> _captureFrame() async {
-    final boundary = _repaintKey.currentContext?.findRenderObject()
-        as RenderRepaintBoundary?;
-    if (boundary == null) return null;
-    try {
-      final image = await boundary.toImage(pixelRatio: 1.0);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      image.dispose();
-      return byteData?.buffer.asUint8List();
-    } catch (e) {
-      return null;
-    }
   }
 
   void _cancelAnalysis() {
     setState(() {
       _isAnalyzing = false;
     });
-    _videoController?.pause();
   }
 
   void _viewResults() {
@@ -277,22 +234,6 @@ class _VideoAnalyzingScreenState extends State<VideoAnalyzingScreen> {
       ),
       body: Column(
         children: [
-          // Video preview
-          if (_videoController != null && _videoController!.value.isInitialized)
-            Container(
-              height: 200,
-              color: Colors.black,
-              child: Center(
-                child: RepaintBoundary(
-                  key: _repaintKey,
-                  child: AspectRatio(
-                    aspectRatio: _videoController!.value.aspectRatio,
-                    child: VideoPlayer(_videoController!),
-                  ),
-                ),
-              ),
-            ),
-
           // Progress section
           if (_isAnalyzing)
             Container(
