@@ -1,16 +1,8 @@
-import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
-import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:video_player/video_player.dart';
-import 'package:ultralytics_yolo/ultralytics_yolo.dart';
-import 'yolo_detector.dart';
-import 'person_tracker.dart';
-import 'line_crossing.dart';
-import 'video_results_screen.dart';
+import 'video_analyzing_screen.dart';
 
 class VideoUploadScreen extends StatefulWidget {
   const VideoUploadScreen({super.key});
@@ -20,33 +12,14 @@ class VideoUploadScreen extends StatefulWidget {
 }
 
 class _VideoUploadScreenState extends State<VideoUploadScreen> {
-  final GlobalKey _videoKey = GlobalKey();
-  final PersonTracker _tracker = PersonTracker();
-  late LineCrossingDetector _crossingDetector;
-  YOLO? _yolo;
-
   VideoPlayerController? _videoController;
   String? _selectedVideoPath;
   String? _selectedVideoName;
-  bool _isProcessing = false;
-  bool _videoLoaded = false;
-  double _progress = 0.0;
-  int _entries = 0;
-  int _exits = 0;
-  String _status = 'Select a video to analyze';
-  Timer? _captureTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _crossingDetector = LineCrossingDetector(tracker: _tracker);
-  }
+  bool _isLoading = false;
 
   @override
   void dispose() {
-    _captureTimer?.cancel();
     _videoController?.dispose();
-    _yolo?.dispose();
     super.dispose();
   }
 
@@ -58,211 +31,91 @@ class _VideoUploadScreenState extends State<VideoUploadScreen> {
         title: const Text('Video Analysis'),
         backgroundColor: Colors.grey[850],
       ),
-      body: SingleChildScrollView(
+      body: Padding(
         padding: const EdgeInsets.all(16.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            _buildVideoSelection(),
-            const SizedBox(height: 16),
-            if (_videoLoaded && !_isProcessing) _buildVideoPreview(),
-            const SizedBox(height: 16),
-            _buildProcessingStatus(),
-            const SizedBox(height: 16),
-            _buildResults(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildVideoSelection() {
-    return Card(
-      color: Colors.grey[800],
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            Icon(Icons.video_library, size: 64, color: Colors.blue[400]),
-            const SizedBox(height: 16),
-            Text(
-              _selectedVideoName ?? 'No video selected',
-              style: const TextStyle(color: Colors.white70),
-              textAlign: TextAlign.center,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
+            Card(
+              color: Colors.grey[800],
+              child: Padding(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  children: [
+                    Icon(Icons.video_library, size: 80, color: Colors.blue[400]),
+                    const SizedBox(height: 24),
+                    Text(
+                      _selectedVideoName ?? 'No video selected',
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 16,
+                      ),
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 24),
+                    if (_isLoading)
+                      const CircularProgressIndicator(color: Colors.blue)
+                    else ...[
+                      ElevatedButton.icon(
+                        onPressed: _selectVideo,
+                        icon: const Icon(Icons.folder_open),
+                        label: const Text('Select Video'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.blue,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 32,
+                            vertical: 16,
+                          ),
+                          textStyle: const TextStyle(fontSize: 16),
+                        ),
+                      ),
+                      if (_selectedVideoPath != null) ...[
+                        const SizedBox(height: 16),
+                        ElevatedButton.icon(
+                          onPressed: _startAnalysis,
+                          icon: const Icon(Icons.play_arrow),
+                          label: const Text('Start Analysis'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.green,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 32,
+                              vertical: 16,
+                            ),
+                            textStyle: const TextStyle(fontSize: 16),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ],
+                ),
+              ),
             ),
             const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _isProcessing ? null : _selectVideo,
-                  icon: const Icon(Icons.folder_open),
-                  label: const Text('Select Video'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                  ),
-                ),
-                if (_videoLoaded && !_isProcessing) ...[
-                  const SizedBox(width: 12),
-                  ElevatedButton.icon(
-                    onPressed: _processVideo,
-                    icon: const Icon(Icons.play_arrow),
-                    label: const Text('Process'),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.green,
-                      foregroundColor: Colors.white,
-                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-                    ),
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.grey[800],
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Column(
+                children: [
+                  Icon(Icons.info_outline, color: Colors.white54, size: 24),
+                  SizedBox(height: 8),
+                  Text(
+                    'Select a video to analyze for people detection.\n'
+                    'The app will extract frames and run YOLO detection on each frame.',
+                    style: TextStyle(color: Colors.white54, fontSize: 14),
+                    textAlign: TextAlign.center,
                   ),
                 ],
-              ],
+              ),
             ),
           ],
         ),
-      ),
-    );
-  }
-
-  Widget _buildVideoPreview() {
-    if (_videoController == null || !_videoController!.value.isInitialized) {
-      return const SizedBox.shrink();
-    }
-
-    return Card(
-      color: Colors.grey[800],
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(12),
-        child: RepaintBoundary(
-          key: _videoKey,
-          child: AspectRatio(
-            aspectRatio: _videoController!.value.aspectRatio,
-            child: VideoPlayer(_videoController!),
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildProcessingStatus() {
-    if (!_isProcessing && _selectedVideoPath == null) {
-      return const SizedBox.shrink();
-    }
-
-    return Card(
-      color: Colors.grey[800],
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            if (_isProcessing) ...[
-              LinearProgressIndicator(
-                value: _progress > 0 ? _progress : null,
-                backgroundColor: Colors.grey[700],
-                valueColor: AlwaysStoppedAnimation<Color>(Colors.blue),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                _progress > 0 ? '${(_progress * 100).toInt()}% Complete' : 'Processing...',
-                style: const TextStyle(color: Colors.white70),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                _status,
-                style: const TextStyle(color: Colors.white38, fontSize: 12),
-              ),
-            ] else if (_selectedVideoPath != null && !_videoLoaded) ...[
-              const CircularProgressIndicator(color: Colors.blue),
-              const SizedBox(height: 8),
-              const Text(
-                'Loading video...',
-                style: TextStyle(color: Colors.white70),
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildResults() {
-    if (_entries == 0 && _exits == 0) {
-      return const SizedBox.shrink();
-    }
-
-    return Card(
-      color: Colors.grey[800],
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          children: [
-            const Text(
-              'Results',
-              style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 16),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceAround,
-              children: [
-                _buildResultBox('Entries', _entries, Colors.green),
-                _buildResultBox('Exits', _exits, Colors.red),
-                _buildResultBox('Net', _entries - _exits, Colors.blue),
-              ],
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'Events logged: ${_crossingDetector.events.length}',
-              style: const TextStyle(color: Colors.white54, fontSize: 13),
-            ),
-            const SizedBox(height: 12),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                ElevatedButton.icon(
-                  onPressed: _viewResults,
-                  icon: const Icon(Icons.bar_chart),
-                  label: const Text('View Results'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.blue,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-                const SizedBox(width: 12),
-                ElevatedButton.icon(
-                  onPressed: _resetAndSelectNew,
-                  icon: const Icon(Icons.refresh),
-                  label: const Text('New Video'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.orange,
-                    foregroundColor: Colors.white,
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildResultBox(String label, int value, Color color) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.2),
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Column(
-        children: [
-          Text(
-            value.toString(),
-            style: TextStyle(color: color, fontSize: 32, fontWeight: FontWeight.bold),
-          ),
-          Text(label, style: const TextStyle(color: Colors.white70, fontSize: 14)),
-        ],
       ),
     );
   }
@@ -274,167 +127,53 @@ class _VideoUploadScreenState extends State<VideoUploadScreen> {
 
       final path = result.files.single.path!;
 
-      await _videoController?.dispose();
       setState(() {
-        _videoLoaded = false;
-        _selectedVideoPath = path;
-        _selectedVideoName = result.files.single.name;
-        _status = 'Loading video...';
+        _isLoading = true;
       });
 
+      await _videoController?.dispose();
       _videoController = VideoPlayerController.file(File(path));
       await _videoController!.initialize();
 
-      _videoController!.addListener(() {
-        if (mounted) setState(() {});
-      });
-
       setState(() {
-        _videoLoaded = true;
-        _status = 'Video loaded. Tap Process to analyze.';
+        _selectedVideoPath = path;
+        _selectedVideoName = result.files.single.name;
+        _isLoading = false;
       });
     } catch (e) {
       setState(() {
-        _status = 'Error: $e';
+        _isLoading = false;
       });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error loading video: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
-  Future<Uint8List?> _captureFrame() async {
-    final boundary = _videoKey.currentContext?.findRenderObject() as RenderRepaintBoundary?;
-    if (boundary == null) return null;
-    try {
-      final image = await boundary.toImage(pixelRatio: 1.0);
-      final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
-      image.dispose();
-      return byteData?.buffer.asUint8List();
-    } catch (e) {
-      return null;
-    }
-  }
+  void _startAnalysis() {
+    if (_selectedVideoPath == null) return;
 
-  Future<void> _processVideo() async {
-    if (_videoController == null || !_videoController!.value.isInitialized) return;
-
-    if (_yolo == null) {
-      _yolo = YOLO(
-        modelPath: 'assets/models/best.tflite',
-        task: YOLOTask.detect,
-        useGpu: false,
-      );
-      await _yolo!.loadModel();
-    }
-
-    setState(() {
-      _isProcessing = true;
-      _progress = 0.0;
-      _entries = 0;
-      _exits = 0;
-      _status = 'Processing frames...';
-    });
-
-    _tracker.reset();
-    _crossingDetector.reset();
-
-    final duration = _videoController!.value.duration.inMilliseconds;
-    const captureIntervalMs = 500;
-    int framesCaptured = 0;
-
-    _videoController!.seekTo(Duration.zero);
-    await Future.delayed(const Duration(milliseconds: 300));
-    _videoController!.play();
-
-    final completer = Completer<void>();
-
-    _captureTimer = Timer.periodic(
-      const Duration(milliseconds: captureIntervalMs),
-      (timer) async {
-        final currentPos = _videoController!.value.position.inMilliseconds;
-
-        if (currentPos >= duration || !_isProcessing) {
-          timer.cancel();
-          _captureTimer = null;
-          await _videoController!.pause();
-          if (!completer.isCompleted) completer.complete();
-          return;
-        }
-
-        final frameBytes = await _captureFrame();
-        if (frameBytes != null) {
-          try {
-            final results = await _yolo!.predict(frameBytes);
-            final detectionsRaw = results['detections'] as List<dynamic>? ?? [];
-
-            final detections = detectionsRaw
-                .map((d) => Detection(
-                      left: (d['boundingBox']?['left'] as num?)?.toDouble() ?? 0,
-                      top: (d['boundingBox']?['top'] as num?)?.toDouble() ?? 0,
-                      right: (d['boundingBox']?['right'] as num?)?.toDouble() ?? 0,
-                      bottom: (d['boundingBox']?['bottom'] as num?)?.toDouble() ?? 0,
-                      confidence: (d['confidence'] as num?)?.toDouble() ?? 0,
-                      classId: (d['classIndex'] as num?)?.toInt() ?? 0,
-                    ))
-                .where((d) => d.confidence > 0.4)
-                .toList();
-
-            _tracker.update(detections);
-            _crossingDetector.processFrame();
-          } catch (e) {
-            // skip bad frame
-          }
-          framesCaptured++;
-        }
-
-        if (mounted) {
-          setState(() {
-            _progress = currentPos / duration;
-            _entries = _crossingDetector.entries;
-            _exits = _crossingDetector.exits;
-            _status = 'Processing: $framesCaptured frames analyzed';
-          });
-        }
-      },
-    );
-
-    await completer.future;
-
-    setState(() {
-      _isProcessing = false;
-      _progress = 1.0;
-      _entries = _crossingDetector.entries;
-      _exits = _crossingDetector.exits;
-      _status = 'Processing complete! $framesCaptured frames analyzed.';
-    });
-  }
-
-  void _viewResults() {
     Navigator.push(
       context,
       MaterialPageRoute(
-        builder: (context) => VideoResultsScreen(
-          entries: _entries,
-          exits: _exits,
-          totalFrames: _crossingDetector.events.length,
-          eventsLogged: _crossingDetector.events.length,
+        builder: (context) => VideoAnalyzingScreen(
+          videoPath: _selectedVideoPath!,
+          videoName: _selectedVideoName ?? 'Unknown',
         ),
       ),
-    );
-  }
-
-  void _resetAndSelectNew() {
-    _captureTimer?.cancel();
-    _captureTimer = null;
-    setState(() {
-      _selectedVideoPath = null;
-      _selectedVideoName = null;
-      _videoLoaded = false;
-      _isProcessing = false;
-      _progress = 0.0;
-      _entries = 0;
-      _exits = 0;
-      _status = 'Select a video to analyze';
+    ).then((_) {
+      // Reset state when returning from analysis
+      setState(() {
+        _selectedVideoPath = null;
+        _selectedVideoName = null;
+        _videoController?.dispose();
+        _videoController = null;
+      });
     });
-    _videoController?.dispose();
-    _videoController = null;
   }
 }
