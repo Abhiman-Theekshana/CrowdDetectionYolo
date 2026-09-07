@@ -72,7 +72,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
         fit: StackFit.expand,
         children: [
           YOLOView(
-            modelPath: 'assets/models/best.onnx',
+            modelPath: 'assets/models/best.tflite',
             task: YOLOTask.detect,
             confidenceThreshold: 0.4,
             iouThreshold: 0.5,

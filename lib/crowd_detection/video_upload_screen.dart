@@ -10,6 +10,7 @@ import 'package:ultralytics_yolo/ultralytics_yolo.dart';
 import 'yolo_detector.dart';
 import 'person_tracker.dart';
 import 'line_crossing.dart';
+import 'video_results_screen.dart';
 
 class VideoUploadScreen extends StatefulWidget {
   const VideoUploadScreen({super.key});
@@ -217,14 +218,29 @@ class _VideoUploadScreenState extends State<VideoUploadScreen> {
               style: const TextStyle(color: Colors.white54, fontSize: 13),
             ),
             const SizedBox(height: 12),
-            ElevatedButton.icon(
-              onPressed: _resetAndSelectNew,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Analyze Another Video'),
-              style: ElevatedButton.styleFrom(
-                backgroundColor: Colors.orange,
-                foregroundColor: Colors.white,
-              ),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                ElevatedButton.icon(
+                  onPressed: _viewResults,
+                  icon: const Icon(Icons.bar_chart),
+                  label: const Text('View Results'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blue,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                ElevatedButton.icon(
+                  onPressed: _resetAndSelectNew,
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('New Video'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.orange,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
             ),
           ],
         ),
@@ -302,7 +318,7 @@ class _VideoUploadScreenState extends State<VideoUploadScreen> {
 
     if (_yolo == null) {
       _yolo = YOLO(
-        modelPath: 'assets/models/best.onnx',
+        modelPath: 'assets/models/best.tflite',
         task: YOLOTask.detect,
         useGpu: false,
       );
@@ -389,6 +405,20 @@ class _VideoUploadScreenState extends State<VideoUploadScreen> {
       _exits = _crossingDetector.exits;
       _status = 'Processing complete! $framesCaptured frames analyzed.';
     });
+  }
+
+  void _viewResults() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => VideoResultsScreen(
+          entries: _entries,
+          exits: _exits,
+          totalFrames: _crossingDetector.events.length,
+          eventsLogged: _crossingDetector.events.length,
+        ),
+      ),
+    );
   }
 
   void _resetAndSelectNew() {

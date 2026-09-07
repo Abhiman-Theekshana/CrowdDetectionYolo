@@ -11,7 +11,7 @@ class YoloDetector {
   Future<void> loadModel() async {
     try {
       _yolo = YOLO(
-        modelPath: 'assets/models/best.onnx',
+        modelPath: 'assets/models/best.tflite',
         task: YOLOTask.detect,
         useGpu: false,
       );

@@ -25,4 +25,4 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/models/best.onnx
+    - assets/models/best.tflite
