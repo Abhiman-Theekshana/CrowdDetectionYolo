@@ -1,0 +1,2 @@
+-dontwarn java.beans.**
+-dontwarn org.yaml.snakeyaml.**
