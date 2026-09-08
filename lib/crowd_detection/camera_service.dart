@@ -2,15 +2,27 @@ import 'dart:async';
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
 
-class CameraFrame {
-  final Uint8List bytes;
+/// A raw YUV420 camera frame. Pixel conversion happens in the background
+/// detection isolate — the UI thread only forwards these plane bytes.
+class RawCameraFrame {
+  final Uint8List y;
+  final Uint8List u;
+  final Uint8List v;
   final int width;
   final int height;
+  final int yRowStride;
+  final int uvRowStride;
+  final int uvPixelStride;
 
-  CameraFrame({
-    required this.bytes,
+  RawCameraFrame({
+    required this.y,
+    required this.u,
+    required this.v,
     required this.width,
     required this.height,
+    required this.yRowStride,
+    required this.uvRowStride,
+    required this.uvPixelStride,
   });
 }
 
@@ -20,19 +32,23 @@ class CameraService {
   bool _isInitialized = false;
   bool _isStreaming = false;
 
-  final StreamController<CameraFrame> _frameController =
-      StreamController<CameraFrame>.broadcast();
+  final StreamController<RawCameraFrame> _frameController =
+      StreamController<RawCameraFrame>.broadcast();
 
   CameraController? get controller => _controller;
   bool get isInitialized => _isInitialized;
 
-  Stream<CameraFrame> get frameStream => _frameController.stream;
+  Stream<RawCameraFrame> get frameStream => _frameController.stream;
 
   Future<void> initializeCameras() async {
     _cameras = await availableCameras();
   }
 
-  Future<void> startCamera({ResolutionPreset resolution = ResolutionPreset.medium}) async {
+  /// Starts the camera. Defaults to [ResolutionPreset.low]: the model input
+  /// is 320x320 regardless, so capturing higher than necessary only wastes
+  /// per-pixel conversion work every frame.
+  Future<void> startCamera(
+      {ResolutionPreset resolution = ResolutionPreset.low}) async {
     if (_cameras.isEmpty) return;
 
     final backCamera = _cameras.firstWhere(
@@ -52,63 +68,23 @@ class CameraService {
 
     await _controller!.startImageStream((CameraImage image) {
       if (!_isStreaming) return;
-      _processCameraImage(image);
+      try {
+        _frameController.add(RawCameraFrame(
+          y: image.planes[0].bytes,
+          u: image.planes[1].bytes,
+          v: image.planes[2].bytes,
+          width: image.width,
+          height: image.height,
+          yRowStride: image.planes[0].bytesPerRow,
+          uvRowStride: image.planes[1].bytesPerRow,
+          uvPixelStride: image.planes[1].bytesPerPixel ?? 1,
+        ));
+      } catch (e) {
+        // skip bad frame
+      }
     });
 
     _isStreaming = true;
-  }
-
-  void _processCameraImage(CameraImage image) {
-    try {
-      final rgbBytes = _convertYUV420ToRGB(image);
-      _frameController.add(CameraFrame(
-        bytes: rgbBytes,
-        width: image.planes[0].width ?? image.width,
-        height: image.planes[0].height ?? image.height,
-      ));
-    } catch (e) {
-      // skip bad frame
-    }
-  }
-
-  Uint8List _convertYUV420ToRGB(CameraImage image) {
-    final width = image.width;
-    final height = image.height;
-    final yPlane = image.planes[0].bytes;
-    final uPlane = image.planes[1].bytes;
-    final vPlane = image.planes[2].bytes;
-
-    final yRowStride = image.planes[0].bytesPerRow;
-    final uvRowStride = image.planes[1].bytesPerRow;
-    final uvPixelStride = image.planes[1].bytesPerPixel ?? 1;
-
-    final rgbBytes = Uint8List(width * height * 3);
-    int rgbIndex = 0;
-
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final yIndex = y * yRowStride + x;
-        final uvIndex = (y ~/ 2) * uvRowStride + (x ~/ 2) * uvPixelStride;
-
-        final yValue = yPlane[yIndex];
-        final uValue = uPlane[uvIndex];
-        final vValue = vPlane[uvIndex];
-
-        int r = (yValue + 1.370705 * (vValue - 128)).round();
-        int g = (yValue - 0.337633 * (uValue - 128) - 0.698001 * (vValue - 128)).round();
-        int b = (yValue + 1.732446 * (uValue - 128)).round();
-
-        r = r.clamp(0, 255);
-        g = g.clamp(0, 255);
-        b = b.clamp(0, 255);
-
-        rgbBytes[rgbIndex++] = r;
-        rgbBytes[rgbIndex++] = g;
-        rgbBytes[rgbIndex++] = b;
-      }
-    }
-
-    return rgbBytes;
   }
 
   void stopCamera() {

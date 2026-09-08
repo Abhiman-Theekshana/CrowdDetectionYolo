@@ -1,10 +1,12 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'person_tracker.dart';
 import 'line_crossing.dart';
 import 'yolo_detector.dart';
 import 'camera_service.dart';
+import 'detection_isolate.dart';
 
 class LiveDetectionScreen extends StatefulWidget {
   const LiveDetectionScreen({super.key});
@@ -13,18 +15,35 @@ class LiveDetectionScreen extends StatefulWidget {
   State<LiveDetectionScreen> createState() => _LiveDetectionScreenState();
 }
 
+/// Normalized doorway region of interest (0-1). Only detections whose center
+/// falls inside are tracked/counted. Tune these to the mounted phone's view
+/// of the doorway; full frame = previous behavior.
+const Rect doorwayRoi = Rect.fromLTWH(0.0, 0.0, 1.0, 1.0);
+
 class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
   final CameraService _cameraService = CameraService();
-  final YoloDetector _detector = YoloDetector();
+  final DetectionIsolate _worker = DetectionIsolate();
   late PersonTracker _tracker;
   late LineCrossingDetector _crossingDetector;
 
   bool _isDetecting = false;
-  bool _isProcessingFrame = false;
-  int _frameCount = 0;
+  bool _frameInFlight = false;
+  bool _workerReady = false;
   String _selectedDoor = 'Front';
   List<Detection> _latestDetections = [];
   String? _errorMessage;
+
+  // HUD state.
+  bool _showHud = false;
+  double _confidence = 0.35;
+  double _iou = 0.45;
+  double _fps = 0;
+  double _preMs = 0;
+  double _inferMs = 0;
+  double _postMs = 0;
+  String _delegateName = '…';
+  Map<String, double> _benchmarkMs = {};
+  final List<DateTime> _frameTimes = [];
 
   @override
   void initState() {
@@ -35,12 +54,24 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
   }
 
   Future<void> _initialize() async {
+    // Spawn the background worker and benchmark delegates inside it.
     try {
-      await _detector.loadModel();
+      final modelBytes =
+          (await rootBundle.load('assets/models/best.tflite')).buffer.asUint8List();
+      final ready = await _worker.start(modelBytes);
+      _delegateName = ready['delegate']?.toString() ?? 'cpu';
+      final bench = ready['benchmarkMs'];
+      if (bench is Map) {
+        _benchmarkMs = bench.map(
+          (k, v) => MapEntry(k.toString(), (v as num).toDouble()),
+        );
+      }
+      debugPrint('Detection worker ready (delegate=$_delegateName, '
+          'benchmarkMs=$_benchmarkMs)');
     } catch (e) {
-      setState(() {
-        _errorMessage = 'Failed to load model: $e';
-      });
+      if (mounted) {
+        setState(() => _errorMessage = 'Failed to load model: $e');
+      }
       return;
     }
 
@@ -48,46 +79,68 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       await _cameraService.initializeCameras();
       await _cameraService.startCamera();
     } catch (e) {
-      setState(() {
-        _errorMessage = 'Failed to start camera: $e';
-      });
+      if (mounted) {
+        setState(() => _errorMessage = 'Failed to start camera: $e');
+      }
       return;
     }
 
-    if (mounted) setState(() {});
+    if (mounted) {
+      setState(() => _workerReady = true);
+    }
     _startDetection();
   }
 
   void _startDetection() {
     _isDetecting = true;
-    _cameraService.frameStream.listen((CameraFrame frame) {
-      if (!_isDetecting || _isProcessingFrame) return;
-
-      _frameCount++;
-      if (_frameCount % 3 != 0) return;
-
+    _cameraService.frameStream.listen((RawCameraFrame frame) {
+      if (!_isDetecting || !_workerReady || _frameInFlight) return;
       _processFrame(frame);
     });
   }
 
-  Future<void> _processFrame(CameraFrame frame) async {
-    _isProcessingFrame = true;
+  Future<void> _processFrame(RawCameraFrame frame) async {
+    _frameInFlight = true;
 
     try {
-      final detections = _detector.runInference(frame.bytes);
+      final result = await _worker.processFrame(
+        y: frame.y,
+        u: frame.u,
+        v: frame.v,
+        width: frame.width,
+        height: frame.height,
+        yRowStride: frame.yRowStride,
+        uvRowStride: frame.uvRowStride,
+        uvPixelStride: frame.uvPixelStride,
+        confidence: _confidence,
+        iou: _iou,
+      );
 
-      _tracker.update(detections);
+      if (result.error != null) {
+        debugPrint('Worker frame error: ${result.error}');
+        return;
+      }
+
+      _tracker.update(result.detections, roi: doorwayRoi);
       _crossingDetector.processFrame();
 
-      _latestDetections = detections;
+      _latestDetections = result.detections;
+      _preMs = result.preMs;
+      _inferMs = result.inferMs;
+      _postMs = result.postMs;
 
-      if (mounted) {
-        setState(() {});
-      }
+      final now = DateTime.now();
+      _frameTimes.add(now);
+      _frameTimes.removeWhere(
+        (t) => now.difference(t).inMilliseconds > 1000,
+      );
+      _fps = _frameTimes.length.toDouble();
+
+      if (mounted) setState(() {});
     } catch (e) {
       debugPrint('Frame processing error: $e');
     } finally {
-      _isProcessingFrame = false;
+      _frameInFlight = false;
     }
   }
 
@@ -100,8 +153,9 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
 
   @override
   void dispose() {
+    _isDetecting = false;
     _cameraService.dispose();
-    _detector.dispose();
+    _worker.dispose();
     super.dispose();
   }
 
@@ -136,15 +190,31 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
               ),
             )
           else if (_cameraService.isInitialized)
-            Center(
-              child: AspectRatio(
-                aspectRatio: _cameraService.controller!.value.aspectRatio,
-                child: CameraPreview(_cameraService.controller!),
+            SizedBox.expand(
+              child: FittedBox(
+                fit: BoxFit.cover,
+                child: SizedBox(
+                  width: _cameraService.controller!.value.previewSize?.height ??
+                      MediaQuery.of(context).size.width,
+                  height: _cameraService.controller!.value.previewSize?.width ??
+                      MediaQuery.of(context).size.height,
+                  child: CameraPreview(_cameraService.controller!),
+                ),
               ),
             )
           else
             const Center(
-              child: CircularProgressIndicator(color: Colors.white),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  CircularProgressIndicator(color: Colors.white),
+                  SizedBox(height: 12),
+                  Text(
+                    'Loading model (benchmarking delegates)…',
+                    style: TextStyle(color: Colors.white70, fontSize: 13),
+                  ),
+                ],
+              ),
             ),
 
           CustomPaint(
@@ -161,6 +231,15 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             right: 16,
             child: _buildStatsPanel(),
           ),
+
+          if (_showHud)
+            Positioned(
+              bottom:
+                  MediaQuery.of(context).padding.bottom + 76,
+              left: 16,
+              right: 16,
+              child: _buildHudPanel(),
+            ),
 
           Positioned(
             bottom: MediaQuery.of(context).padding.bottom + 16,
@@ -187,7 +266,8 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             children: [
               _buildStatBox('Entries', _crossingDetector.entries, Colors.green),
               _buildStatBox('Exits', _crossingDetector.exits, Colors.red),
-              _buildStatBox('Occupancy', _crossingDetector.occupancy, Colors.blue),
+              _buildStatBox(
+                  'Occupancy', _crossingDetector.occupancy, Colors.blue),
             ],
           ),
           const SizedBox(height: 8),
@@ -248,6 +328,100 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
     );
   }
 
+  Widget _buildHudPanel() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.75),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.cyanAccent.withValues(alpha: 0.4)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                'FPS ${_fps.toStringAsFixed(0)}  ·  $_delegateName',
+                style: const TextStyle(
+                  color: Colors.cyanAccent,
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  fontFamily: 'monospace',
+                ),
+              ),
+              Text(
+                '${_preMs.toStringAsFixed(1)}ms pre · '
+                '${_inferMs.toStringAsFixed(1)}ms inference · '
+                '${_postMs.toStringAsFixed(1)}ms post',
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+          ),
+          if (_benchmarkMs.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                'benchmark: ${_benchmarkMs.entries.map((e) => '${e.key} ${e.value.toStringAsFixed(1)}ms').join('  ·  ')}',
+                style: const TextStyle(
+                  color: Colors.white38,
+                  fontSize: 10,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+          _buildHudSlider(
+            label: 'Conf ${_confidence.toStringAsFixed(2)}',
+            value: _confidence,
+            onChanged: (v) => setState(() => _confidence = v),
+          ),
+          _buildHudSlider(
+            label: 'IoU ${_iou.toStringAsFixed(2)}',
+            value: _iou,
+            onChanged: (v) => setState(() => _iou = v),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildHudSlider({
+    required String label,
+    required double value,
+    required ValueChanged<double> onChanged,
+  }) {
+    return Row(
+      children: [
+        SizedBox(
+          width: 88,
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 11,
+              fontFamily: 'monospace',
+            ),
+          ),
+        ),
+        Expanded(
+          child: Slider(
+            value: value,
+            min: 0.1,
+            max: 0.9,
+            divisions: 16,
+            activeColor: Colors.cyanAccent,
+            onChanged: onChanged,
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildControlPanel() {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
@@ -259,7 +433,17 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.orange,
             foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          ),
+        ),
+        ElevatedButton.icon(
+          onPressed: () => setState(() => _showHud = !_showHud),
+          icon: Icon(_showHud ? Icons.speed : Icons.speed_outlined),
+          label: const Text('HUD'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _showHud ? Colors.cyan[700] : Colors.grey[800],
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           ),
         ),
         ElevatedButton.icon(
@@ -271,7 +455,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.red,
             foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           ),
         ),
       ],
@@ -287,39 +471,96 @@ class _OverlayPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    final lineY = size.height * linePosition;
+
+    // Draw Virtual Threshold Line
     final linePaint = Paint()
       ..color = Colors.yellow
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
 
-    final lineY = size.height * linePosition;
     canvas.drawLine(
       Offset(0, lineY),
       Offset(size.width, lineY),
       linePaint,
     );
 
-    final textPainter = TextPainter(
+    // Label: OUTSIDE (OUT) - Top side of line
+    final outTextPainter = TextPainter(
       text: const TextSpan(
-        text: 'VIRTUAL LINE',
+        text: '▲ OUTSIDE (OUT)',
         style: TextStyle(
-          color: Colors.yellow,
-          fontSize: 12,
+          color: Colors.redAccent,
+          fontSize: 13,
           fontWeight: FontWeight.bold,
+          letterSpacing: 1.1,
         ),
       ),
       textDirection: TextDirection.ltr,
     );
-    textPainter.layout();
-    textPainter.paint(canvas, Offset(10, lineY - 20));
+    outTextPainter.layout();
 
+    // Draw OUT background badge
+    final outBgRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(12, lineY - 28, outTextPainter.width + 16, 22),
+      const Radius.circular(6),
+    );
+    final outBgPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.6)
+      ..style = PaintingStyle.fill;
+    canvas.drawRRect(outBgRect, outBgPaint);
+    outTextPainter.paint(canvas, Offset(20, lineY - 24));
+
+    // Label: INSIDE (IN) - Bottom side of line
+    final inTextPainter = TextPainter(
+      text: const TextSpan(
+        text: '▼ INSIDE (IN)',
+        style: TextStyle(
+          color: Colors.greenAccent,
+          fontSize: 13,
+          fontWeight: FontWeight.bold,
+          letterSpacing: 1.1,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    inTextPainter.layout();
+
+    // Draw IN background badge
+    final inBgRect = RRect.fromRectAndRadius(
+      Rect.fromLTWH(12, lineY + 8, inTextPainter.width + 16, 22),
+      const Radius.circular(6),
+    );
+    final inBgPaint = Paint()
+      ..color = Colors.black.withValues(alpha: 0.6)
+      ..style = PaintingStyle.fill;
+    canvas.drawRRect(inBgRect, inBgPaint);
+    inTextPainter.paint(canvas, Offset(20, lineY + 12));
+
+    // Label: Center Threshold Title
+    final lineTitlePainter = TextPainter(
+      text: const TextSpan(
+        text: '━━ DOORWAY THRESHOLD ━━',
+        style: TextStyle(
+          color: Colors.yellow,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    );
+    lineTitlePainter.layout();
+    lineTitlePainter.paint(
+        canvas, Offset(size.width - lineTitlePainter.width - 16, lineY - 18));
+
+    // Draw Bounding Boxes
     final boxPaint = Paint()
-      ..color = Colors.green
-      ..strokeWidth = 2
+      ..color = Colors.greenAccent
+      ..strokeWidth = 2.5
       ..style = PaintingStyle.stroke;
 
     final fillPaint = Paint()
-      ..color = Colors.green.withValues(alpha: 0.15)
+      ..color = Colors.greenAccent.withValues(alpha: 0.18)
       ..style = PaintingStyle.fill;
 
     for (final det in detections) {
@@ -334,17 +575,18 @@ class _OverlayPainter extends CustomPainter {
 
       final labelPainter = TextPainter(
         text: TextSpan(
-          text: '${(det.confidence * 100).toInt()}%',
+          text: 'Person ${(det.confidence * 100).toInt()}%',
           style: const TextStyle(
-            color: Colors.green,
-            fontSize: 10,
+            color: Colors.white,
+            fontSize: 11,
             fontWeight: FontWeight.bold,
+            backgroundColor: Colors.green,
           ),
         ),
         textDirection: TextDirection.ltr,
       );
       labelPainter.layout();
-      labelPainter.paint(canvas, Offset(rect.left, rect.top - 12));
+      labelPainter.paint(canvas, Offset(rect.left, rect.top - 14));
     }
   }
 

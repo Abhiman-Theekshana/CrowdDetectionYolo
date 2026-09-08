@@ -4,6 +4,12 @@ import 'person_tracker.dart';
 class LineCrossingDetector {
   final PersonTracker tracker;
   final double linePosition;
+
+  /// A side change is only counted after the person is observed on the new
+  /// side for this many consecutive frames. Prevents detection jitter near
+  /// the line from producing false entries/exits.
+  final int requiredConsecutiveFrames;
+
   int entries = 0;
   int exits = 0;
   final List<DetectionEvent> events = [];
@@ -11,6 +17,7 @@ class LineCrossingDetector {
   LineCrossingDetector({
     required this.tracker,
     this.linePosition = 0.6,
+    this.requiredConsecutiveFrames = 3,
   });
 
   int get occupancy => entries - exits;
@@ -19,7 +26,31 @@ class LineCrossingDetector {
     for (final person in tracker.trackedPersons) {
       final currentSide = person.lastCentroidY < linePosition ? 'outside' : 'inside';
 
-      if (person.lastSide != null && person.lastSide != currentSide) {
+      if (person.lastSide == null) {
+        // First observation establishes the confirmed side immediately.
+        person.lastSide = currentSide;
+        person.candidateSide = null;
+        person.candidateFrames = 0;
+        continue;
+      }
+
+      if (currentSide == person.lastSide) {
+        // Still on the confirmed side — drop any pending candidate.
+        person.candidateSide = null;
+        person.candidateFrames = 0;
+        continue;
+      }
+
+      // Person is on a different side than the confirmed one: accumulate
+      // evidence before counting a crossing.
+      if (person.candidateSide == currentSide) {
+        person.candidateFrames++;
+      } else {
+        person.candidateSide = currentSide;
+        person.candidateFrames = 1;
+      }
+
+      if (person.candidateFrames >= requiredConsecutiveFrames) {
         if (person.lastSide == 'outside' && currentSide == 'inside') {
           entries++;
           events.add(DetectionEvent(
@@ -35,9 +66,10 @@ class LineCrossingDetector {
             timestamp: DateTime.now(),
           ));
         }
+        person.lastSide = currentSide;
+        person.candidateSide = null;
+        person.candidateFrames = 0;
       }
-
-      person.lastSide = currentSide;
     }
   }
 

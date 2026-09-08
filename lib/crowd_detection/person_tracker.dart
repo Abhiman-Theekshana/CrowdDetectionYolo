@@ -1,3 +1,4 @@
+import 'dart:ui' show Offset, Rect;
 import '../models/tracked_person.dart';
 import 'yolo_detector.dart';
 
@@ -13,18 +14,28 @@ class PersonTracker {
     this.gracePeriodFrames = 3,
   });
 
-  void update(List<Detection> detections) {
-    final matchedDetections = List<bool>.filled(detections.length, false);
+  /// Updates tracks with the latest frame's detections.
+  ///
+  /// [roi] is a normalized (0-1) region of interest around the doorway.
+  /// Detections whose center falls outside it are ignored for tracking and
+  /// counting (e.g. seated passengers, people outside a window). Defaults to
+  /// the full frame, which preserves the previous behavior.
+  void update(List<Detection> detections, {Rect roi = const Rect.fromLTWH(0, 0, 1, 1)}) {
+    final inRoi = detections
+        .where((d) => roi.contains(Offset(d.centerX, d.centerY)))
+        .toList();
+
+    final matchedDetections = List<bool>.filled(inRoi.length, false);
     final matchedTracks = List<bool>.filled(trackedPersons.length, false);
 
-    for (int i = 0; i < detections.length; i++) {
+    for (int i = 0; i < inRoi.length; i++) {
       double bestDist = double.infinity;
       int bestIdx = -1;
 
       for (int j = 0; j < trackedPersons.length; j++) {
         if (matchedTracks[j]) continue;
 
-        final dist = (detections[i].centerY - trackedPersons[j].lastCentroidY).abs();
+        final dist = (inRoi[i].centerY - trackedPersons[j].lastCentroidY).abs();
         if (dist < bestDist && dist < maxDistance) {
           bestDist = dist;
           bestIdx = j;
@@ -32,7 +43,7 @@ class PersonTracker {
       }
 
       if (bestIdx >= 0) {
-        trackedPersons[bestIdx].lastCentroidY = detections[i].centerY;
+        trackedPersons[bestIdx].lastCentroidY = inRoi[i].centerY;
         trackedPersons[bestIdx].framesSinceLastSeen = 0;
         matchedDetections[i] = true;
         matchedTracks[bestIdx] = true;
@@ -49,11 +60,11 @@ class PersonTracker {
       (p) => p.framesSinceLastSeen > gracePeriodFrames,
     );
 
-    for (int i = 0; i < detections.length; i++) {
+    for (int i = 0; i < inRoi.length; i++) {
       if (!matchedDetections[i]) {
         trackedPersons.add(TrackedPerson(
           id: _nextId++,
-          lastCentroidY: detections[i].centerY,
+          lastCentroidY: inRoi[i].centerY,
         ));
       }
     }
