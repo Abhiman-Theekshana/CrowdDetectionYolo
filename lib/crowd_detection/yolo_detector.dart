@@ -19,12 +19,14 @@ class LetterboxResult {
 
 class StagedInference {
   final List<Detection> detections;
+  final int rawCount;
   final double preMs;
   final double inferMs;
   final double postMs;
 
   const StagedInference({
     required this.detections,
+    required this.rawCount,
     required this.preMs,
     required this.inferMs,
     required this.postMs,
@@ -55,6 +57,10 @@ class YoloDetector {
 
   bool get isLoaded => _isLoaded;
   int get inputSize => _inputSize;
+
+  /// Returns the interpreter's input tensor shape (e.g. `[1, 3, 320, 320]`).
+  List<int> get inputShape =>
+      _interpreter?.getInputTensor(0).shape ?? [1, 3, _inputSize, _inputSize];
 
   /// Builds interpreter options for a named delegate candidate.
   /// Returns null if that candidate is unavailable (GPU delegate missing).
@@ -321,20 +327,20 @@ class YoloDetector {
     infer.stop();
 
     final post = Stopwatch()..start();
-    final detections = _parseOutput(output, outputShape);
+    final (rawCount, detections) = _parseOutput(output, outputShape);
     post.stop();
 
     return StagedInference(
       detections: detections,
+      rawCount: rawCount,
       preMs: pre.elapsedMicroseconds / 1000.0,
       inferMs: infer.elapsedMicroseconds / 1000.0,
       postMs: post.elapsedMicroseconds / 1000.0,
     );
   }
 
-  List<Detection> _parseOutput(List output, List<int> shape) {
+  (int, List<Detection>) _parseOutput(List output, List<int> shape) {
     final detections = <Detection>[];
-
     if (shape.length == 3) {
       final numFeatures = shape[1];
       final numDetections = shape[2];
@@ -471,7 +477,8 @@ class YoloDetector {
       }
     }
 
-    return _nonMaxSuppression(detections, iouThreshold);
+    final rawCount = detections.length;
+    return (rawCount, _nonMaxSuppression(detections, iouThreshold));
   }
 
   List<Detection> _nonMaxSuppression(List<Detection> detections, double iouThreshold) {

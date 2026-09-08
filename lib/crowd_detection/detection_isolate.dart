@@ -8,6 +8,7 @@ import 'yolo_detector.dart';
 class WorkerResult {
   final int id;
   final List<Detection> detections;
+  final int rawCount;
   final double preMs;
   final double inferMs;
   final double postMs;
@@ -16,6 +17,7 @@ class WorkerResult {
   WorkerResult({
     required this.id,
     required this.detections,
+    required this.rawCount,
     required this.preMs,
     required this.inferMs,
     required this.postMs,
@@ -91,6 +93,7 @@ void _detectionWorker(SendPort uiPort) {
           'delegate': detector!.activeDelegate,
           'benchmarkMs': detector!.benchmarkMs,
           'inputSize': detector!.inputSize,
+          'inputShape': detector!.inputShape,
         });
       } catch (e) {
         uiPort.send({'type': 'fatal', 'message': e.toString()});
@@ -147,6 +150,7 @@ void _detectionWorker(SendPort uiPort) {
                     'cls': d.classId,
                   })
               .toList(),
+          'rawCount': staged.rawCount,
           'preMs': staged.preMs,
           'inferMs': staged.inferMs,
           'postMs': staged.postMs,
@@ -223,6 +227,7 @@ class DetectionIsolate {
         completer.complete(WorkerResult(
           id: id,
           detections: const [],
+          rawCount: 0,
           preMs: 0,
           inferMs: 0,
           postMs: 0,
@@ -232,21 +237,22 @@ class DetectionIsolate {
       }
       final raw = (message['detections'] as List).cast<Map>();
       completer.complete(WorkerResult(
-        id: id,
-        detections: raw
-            .map((d) => Detection(
-                  left: (d['l'] as num).toDouble(),
-                  top: (d['t'] as num).toDouble(),
-                  right: (d['r'] as num).toDouble(),
-                  bottom: (d['b'] as num).toDouble(),
-                  confidence: (d['c'] as num).toDouble(),
-                  classId: (d['cls'] as num).toInt(),
-                ))
-            .toList(),
-        preMs: (message['preMs'] as num).toDouble(),
-        inferMs: (message['inferMs'] as num).toDouble(),
-        postMs: (message['postMs'] as num).toDouble(),
-      ));
+          id: id,
+          detections: raw
+              .map((d) => Detection(
+                    left: (d['l'] as num).toDouble(),
+                    top: (d['t'] as num).toDouble(),
+                    right: (d['r'] as num).toDouble(),
+                    bottom: (d['b'] as num).toDouble(),
+                    confidence: (d['c'] as num).toDouble(),
+                    classId: (d['cls'] as num).toInt(),
+                  ))
+              .toList(),
+          rawCount: (message['rawCount'] as num?)?.toInt() ?? 0,
+          preMs: (message['preMs'] as num).toDouble(),
+          inferMs: (message['inferMs'] as num).toDouble(),
+          postMs: (message['postMs'] as num).toDouble(),
+        ));
     }
   }
 

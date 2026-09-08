@@ -10,6 +10,9 @@ class LineCrossingDetector {
   /// the line from producing false entries/exits.
   final int requiredConsecutiveFrames;
 
+  /// Called every time a crossing is confirmed. Useful for logging.
+  void Function(String direction, int personId, int occupancy)? onCrossing;
+
   int entries = 0;
   int exits = 0;
   final List<DetectionEvent> events = [];
@@ -58,6 +61,7 @@ class LineCrossingDetector {
             personId: person.id,
             timestamp: DateTime.now(),
           ));
+          onCrossing?.call('entry', person.id, occupancy);
         } else if (person.lastSide == 'inside' && currentSide == 'outside') {
           exits++;
           events.add(DetectionEvent(
@@ -65,6 +69,7 @@ class LineCrossingDetector {
             personId: person.id,
             timestamp: DateTime.now(),
           ));
+          onCrossing?.call('exit', person.id, occupancy);
         }
         person.lastSide = currentSide;
         person.candidateSide = null;

@@ -1,12 +1,15 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
+import 'package:share_plus/share_plus.dart';
 import 'person_tracker.dart';
 import 'line_crossing.dart';
 import 'yolo_detector.dart';
 import 'camera_service.dart';
 import 'detection_isolate.dart';
+import 'session_logger.dart';
 
 class LiveDetectionScreen extends StatefulWidget {
   const LiveDetectionScreen({super.key});
@@ -33,6 +36,18 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
   List<Detection> _latestDetections = [];
   String? _errorMessage;
 
+  // Session logging.
+  final SessionLogger _logger = SessionLogger();
+  int _totalFrames = 0;
+  double _inferMsSum = 0;
+  bool _sessionStarted = false;
+  int _lastLoggedFrame = 0;
+  static const int _logFrameInterval = 10;
+
+  // Post-session state.
+  File? _logFile;
+  bool _sessionEnded = false;
+
   // HUD state.
   bool _showHud = false;
   bool _useUltraWide = false;
@@ -51,10 +66,21 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
     super.initState();
     _tracker = PersonTracker();
     _crossingDetector = LineCrossingDetector(tracker: _tracker);
+    _crossingDetector.onCrossing = (direction, personId, occupancy) {
+      _logger.logCrossing(
+        direction: direction,
+        personId: personId,
+        occupancy: occupancy,
+      );
+    };
     _initialize();
   }
 
   Future<void> _initialize() async {
+    // Start the session log.
+    await _logger.startSession(door: _selectedDoor);
+    _sessionStarted = true;
+
     // Spawn the background worker and benchmark delegates inside it.
     try {
       final modelBytes =
@@ -67,9 +93,22 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
           (k, v) => MapEntry(k.toString(), (v as num).toDouble()),
         );
       }
+
+      final inputShapeRaw = ready['inputShape'];
+      final inputShape = inputShapeRaw is List
+          ? inputShapeRaw.map((e) => (e as num).toInt()).toList()
+          : <int>[];
+
+      _logger.logModelLoad(
+        activeDelegate: _delegateName,
+        benchmarkMs: _benchmarkMs,
+        inputShape: inputShape,
+        inputSize: ready['inputSize'] as int? ?? 320,
+      );
       debugPrint('Detection worker ready (delegate=$_delegateName, '
           'benchmarkMs=$_benchmarkMs)');
     } catch (e) {
+      _logger.logError(e);
       if (mounted) {
         setState(() => _errorMessage = 'Failed to load model: $e');
       }
@@ -80,6 +119,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       await _cameraService.initializeCameras();
       await _cameraService.startCamera(useUltraWide: _useUltraWide);
     } catch (e) {
+      _logger.logError(e);
       if (mounted) {
         setState(() => _errorMessage = 'Failed to start camera: $e');
       }
@@ -118,7 +158,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       );
 
       if (result.error != null) {
-        debugPrint('Worker frame error: ${result.error}');
+        _logger.log('FRAME ERROR — ${result.error}');
         return;
       }
 
@@ -130,6 +170,26 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       _inferMs = result.inferMs;
       _postMs = result.postMs;
 
+      _totalFrames++;
+      _inferMsSum += result.inferMs;
+
+      // Throttled per-frame logging (every N frames).
+      if (_totalFrames - _lastLoggedFrame >= _logFrameInterval) {
+        final maxConf = result.detections.isEmpty
+            ? 0.0
+            : result.detections
+                .map((d) => d.confidence)
+                .reduce((a, b) => a > b ? a : b);
+        _logger.logFrame(
+          frameNumber: _totalFrames,
+          inferMs: result.inferMs,
+          rawCount: result.rawCount,
+          filteredCount: result.detections.length,
+          maxConfidence: maxConf,
+        );
+        _lastLoggedFrame = _totalFrames;
+      }
+
       final now = DateTime.now();
       _frameTimes.add(now);
       _frameTimes.removeWhere(
@@ -138,7 +198,8 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       _fps = _frameTimes.length.toDouble();
 
       if (mounted) setState(() {});
-    } catch (e) {
+    } catch (e, stack) {
+      _logger.logError(e, stack);
       debugPrint('Frame processing error: $e');
     } finally {
       _frameInFlight = false;
@@ -169,6 +230,29 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
         setState(() => _errorMessage = 'Camera restart failed: $e');
       }
     }
+  }
+
+  Future<void> _endSession() async {
+    if (!_sessionStarted) return;
+    final avgInfer = _totalFrames > 0 ? _inferMsSum / _totalFrames : 0.0;
+    _logFile = await _logger.endSession(
+      entries: _crossingDetector.entries,
+      exits: _crossingDetector.exits,
+      totalFrames: _totalFrames,
+      avgInferMs: avgInfer,
+    );
+    _sessionEnded = true;
+    _isDetecting = false;
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _shareLogFile() async {
+    final file = _logFile;
+    if (file == null || !await file.exists()) return;
+    await Share.shareXFiles(
+      [XFile(file.path)],
+      text: 'Crowd detection session log',
+    );
   }
 
   @override
@@ -494,7 +578,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       mainAxisAlignment: MainAxisAlignment.spaceEvenly,
       children: [
         ElevatedButton.icon(
-          onPressed: _resetCounters,
+          onPressed: _sessionEnded ? null : _resetCounters,
           icon: const Icon(Icons.refresh),
           label: const Text('Reset'),
           style: ElevatedButton.styleFrom(
@@ -513,18 +597,31 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
           ),
         ),
-        ElevatedButton.icon(
-          onPressed: () {
-            Navigator.pop(context);
-          },
-          icon: const Icon(Icons.stop),
-          label: const Text('Stop'),
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.red,
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+        if (_sessionEnded && _logFile != null)
+          ElevatedButton.icon(
+            onPressed: _shareLogFile,
+            icon: const Icon(Icons.share),
+            label: const Text('Share Log'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.teal,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            ),
+          )
+        else
+          ElevatedButton.icon(
+            onPressed: () async {
+              await _endSession();
+              Navigator.pop(context);
+            },
+            icon: const Icon(Icons.stop),
+            label: const Text('Stop'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            ),
           ),
-        ),
       ],
     );
   }
