@@ -35,6 +35,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
 
   // HUD state.
   bool _showHud = false;
+  bool _useUltraWide = false;
   double _confidence = 0.35;
   double _iou = 0.45;
   double _fps = 0;
@@ -77,7 +78,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
 
     try {
       await _cameraService.initializeCameras();
-      await _cameraService.startCamera();
+      await _cameraService.startCamera(useUltraWide: _useUltraWide);
     } catch (e) {
       if (mounted) {
         setState(() => _errorMessage = 'Failed to start camera: $e');
@@ -149,6 +150,25 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
     _crossingDetector.reset();
     _latestDetections = [];
     setState(() {});
+  }
+
+  Future<void> _toggleUltraWide() async {
+    final newValue = !_useUltraWide;
+    setState(() {
+      _useUltraWide = newValue;
+      _isDetecting = false;
+      _frameInFlight = false;
+      _workerReady = false;
+    });
+    try {
+      await _cameraService.restartCamera(useUltraWide: newValue);
+      if (mounted) setState(() => _workerReady = true);
+      _startDetection();
+    } catch (e) {
+      if (mounted) {
+        setState(() => _errorMessage = 'Camera restart failed: $e');
+      }
+    }
   }
 
   @override
@@ -343,7 +363,8 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                'FPS ${_fps.toStringAsFixed(0)}  ·  $_delegateName',
+                'FPS ${_fps.toStringAsFixed(0)}  ·  $_delegateName'
+                '${_useUltraWide ? "  ·  ${_cameraService.lensModeLabel}" : ""}',
                 style: const TextStyle(
                   color: Colors.cyanAccent,
                   fontSize: 13,
@@ -385,6 +406,8 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             value: _iou,
             onChanged: (v) => setState(() => _iou = v),
           ),
+          const Divider(color: Colors.white24, height: 12),
+          _buildLensRow(),
         ],
       ),
     );
@@ -416,6 +439,50 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             divisions: 16,
             activeColor: Colors.cyanAccent,
             onChanged: onChanged,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildLensRow() {
+    final lensLabel = _cameraService.lensModeLabel;
+    return Row(
+      children: [
+        const Icon(Icons.wifi_outlined, color: Colors.white70, size: 16),
+        const SizedBox(width: 6),
+        const Text(
+          'Ultra-wide',
+          style: TextStyle(
+            color: Colors.white70,
+            fontSize: 11,
+            fontFamily: 'monospace',
+          ),
+        ),
+        const Spacer(),
+        if (_useUltraWide)
+          Text(
+            lensLabel,
+            style: const TextStyle(
+              color: Colors.cyanAccent,
+              fontSize: 10,
+              fontFamily: 'monospace',
+            ),
+          ),
+        const SizedBox(width: 6),
+        SizedBox(
+          height: 24,
+          child: Switch(
+            value: _useUltraWide,
+            onChanged: _workerReady ? (_) => _toggleUltraWide() : null,
+            activeThumbColor: Colors.cyanAccent,
+            trackColor: WidgetStateProperty.resolveWith((states) {
+              if (states.contains(WidgetState.selected)) {
+                return Colors.cyanAccent.withValues(alpha: 0.5);
+              }
+              return Colors.grey;
+            }),
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
           ),
         ),
       ],
