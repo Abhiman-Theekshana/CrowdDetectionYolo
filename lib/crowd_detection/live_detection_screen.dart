@@ -234,6 +234,8 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
 
   Future<void> _endSession() async {
     if (!_sessionStarted) return;
+    _isDetecting = false;
+    _cameraService.stopCamera();
     final avgInfer = _totalFrames > 0 ? _inferMsSum / _totalFrames : 0.0;
     _logFile = await _logger.endSession(
       entries: _crossingDetector.entries,
@@ -242,7 +244,6 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       avgInferMs: avgInfer,
     );
     _sessionEnded = true;
-    _isDetecting = false;
     if (mounted) setState(() {});
   }
 
@@ -293,6 +294,47 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
                 ),
               ),
             )
+          else if (_sessionEnded)
+            Center(
+              child: Container(
+                padding: const EdgeInsets.all(24),
+                margin: const EdgeInsets.all(24),
+                decoration: BoxDecoration(
+                  color: Colors.green.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.check_circle, color: Colors.green, size: 48),
+                    const SizedBox(height: 12),
+                    const Text(
+                      'Session Complete',
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '$_totalFrames frames  ·  avg ${(_inferMsSum / (_totalFrames > 0 ? _totalFrames : 1)).toStringAsFixed(1)}ms/frame',
+                      style: const TextStyle(color: Colors.white70, fontSize: 13),
+                    ),
+                    const SizedBox(height: 16),
+                    const Text(
+                      'Tap "Share Log" to send the session log file,',
+                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                    const Text(
+                      'or "Back" to return to the home screen.',
+                      style: TextStyle(color: Colors.white54, fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            )
           else if (_cameraService.isInitialized)
             SizedBox.expand(
               child: FittedBox(
@@ -321,28 +363,36 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
               ),
             ),
 
-          CustomPaint(
-            size: Size.infinite,
-            painter: _OverlayPainter(
-              linePosition: _crossingDetector.linePosition,
-              detections: _latestDetections,
+          if (!_sessionEnded) ...[
+            CustomPaint(
+              size: Size.infinite,
+              painter: _OverlayPainter(
+                linePosition: _crossingDetector.linePosition,
+                detections: _latestDetections,
+              ),
             ),
-          ),
 
-          Positioned(
-            top: MediaQuery.of(context).padding.top + 16,
-            left: 16,
-            right: 16,
-            child: _buildStatsPanel(),
-          ),
-
-          if (_showHud)
             Positioned(
-              bottom:
-                  MediaQuery.of(context).padding.bottom + 76,
+              top: MediaQuery.of(context).padding.top + 16,
               left: 16,
               right: 16,
-              child: _buildHudPanel(),
+              child: _buildStatsPanel(),
+            ),
+
+            if (_showHud)
+              Positioned(
+                bottom:
+                    MediaQuery.of(context).padding.bottom + 76,
+                left: 16,
+                right: 16,
+                child: _buildHudPanel(),
+              ),
+          ] else
+            Positioned(
+              top: MediaQuery.of(context).padding.top + 16,
+              left: 16,
+              right: 16,
+              child: _buildStatsPanel(),
             ),
 
           Positioned(
@@ -610,14 +660,22 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
           )
         else
           ElevatedButton.icon(
-            onPressed: () async {
-              await _endSession();
-              Navigator.pop(context);
-            },
+            onPressed: _endSession,
             icon: const Icon(Icons.stop),
             label: const Text('Stop'),
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            ),
+          ),
+        if (_sessionEnded)
+          ElevatedButton.icon(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.arrow_back),
+            label: const Text('Back'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.grey[700],
               foregroundColor: Colors.white,
               padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
             ),
