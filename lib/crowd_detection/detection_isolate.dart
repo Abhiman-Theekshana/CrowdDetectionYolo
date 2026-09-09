@@ -9,18 +9,24 @@ class WorkerResult {
   final int id;
   final List<Detection> detections;
   final int rawCount;
-  final double preMs;
+  final double yuvMs;
+  final double letterboxMs;
   final double inferMs;
   final double postMs;
+  final double isolateSendMs;
+  final double isolateReceiveMs;
   final String? error;
 
   WorkerResult({
     required this.id,
     required this.detections,
     required this.rawCount,
-    required this.preMs,
+    required this.yuvMs,
+    required this.letterboxMs,
     required this.inferMs,
     required this.postMs,
+    required this.isolateSendMs,
+    required this.isolateReceiveMs,
     this.error,
   });
 }
@@ -92,6 +98,7 @@ void _detectionWorker(SendPort uiPort) {
           'type': 'ready',
           'delegate': detector!.activeDelegate,
           'benchmarkMs': detector!.benchmarkMs,
+          'benchmarkPerCallMs': detector!.benchmarkPerCallMs,
           'inputSize': detector!.inputSize,
           'inputShape': detector!.inputShape,
         });
@@ -117,6 +124,8 @@ void _detectionWorker(SendPort uiPort) {
         final width = message['width'] as int;
         final height = message['height'] as int;
 
+        // Stage 1a: YUV420 → RGB conversion
+        final yuvSw = Stopwatch()..start();
         final rgb = convertYUV420ToRGB(
           message['y'] as Uint8List,
           message['u'] as Uint8List,
@@ -127,6 +136,7 @@ void _detectionWorker(SendPort uiPort) {
           message['uvRowStride'] as int,
           message['uvPixelStride'] as int,
         );
+        yuvSw.stop();
 
         final image = img.Image.fromBytes(
           width: width,
@@ -135,6 +145,7 @@ void _detectionWorker(SendPort uiPort) {
           order: img.ChannelOrder.rgb,
         );
 
+        // Stages 1b–3: letterbox + inference + postprocessing
         final staged = det.runInferenceFromImage(image);
 
         uiPort.send({
@@ -151,7 +162,8 @@ void _detectionWorker(SendPort uiPort) {
                   })
               .toList(),
           'rawCount': staged.rawCount,
-          'preMs': staged.preMs,
+          'yuvMs': yuvSw.elapsedMicroseconds / 1000.0,
+          'letterboxMs': staged.letterboxMs,
           'inferMs': staged.inferMs,
           'postMs': staged.postMs,
         });
@@ -228,9 +240,12 @@ class DetectionIsolate {
           id: id,
           detections: const [],
           rawCount: 0,
-          preMs: 0,
+          yuvMs: 0,
+          letterboxMs: 0,
           inferMs: 0,
           postMs: 0,
+          isolateSendMs: 0,
+          isolateReceiveMs: 0,
           error: message['message']?.toString(),
         ));
         return;
@@ -249,9 +264,12 @@ class DetectionIsolate {
                   ))
               .toList(),
           rawCount: (message['rawCount'] as num?)?.toInt() ?? 0,
-          preMs: (message['preMs'] as num).toDouble(),
-          inferMs: (message['inferMs'] as num).toDouble(),
-          postMs: (message['postMs'] as num).toDouble(),
+          yuvMs: (message['yuvMs'] as num?)?.toDouble() ?? 0,
+          letterboxMs: (message['letterboxMs'] as num?)?.toDouble() ?? 0,
+          inferMs: (message['inferMs'] as num?)?.toDouble() ?? 0,
+          postMs: (message['postMs'] as num?)?.toDouble() ?? 0,
+          isolateSendMs: 0, // filled by caller
+          isolateReceiveMs: 0, // filled by caller
         ));
     }
   }
@@ -273,6 +291,9 @@ class DetectionIsolate {
     final id = _nextId++;
     final completer = Completer<WorkerResult>();
     _pending[id] = completer;
+
+    // Measure how long it takes to serialize and send data into the isolate.
+    final sendSw = Stopwatch()..start();
     _workerPort!.send({
       'cmd': 'frame',
       'id': id,
@@ -287,7 +308,26 @@ class DetectionIsolate {
       'conf': confidence,
       'iou': iou,
     });
-    return completer.future;
+    sendSw.stop();
+
+    // Wrap the future to capture receive time.
+    final receiveSw = Stopwatch()..start();
+    return completer.future.then((result) {
+      receiveSw.stop();
+      // Return a new result with the isolate timing injected.
+      return WorkerResult(
+        id: result.id,
+        detections: result.detections,
+        rawCount: result.rawCount,
+        yuvMs: result.yuvMs,
+        letterboxMs: result.letterboxMs,
+        inferMs: result.inferMs,
+        postMs: result.postMs,
+        isolateSendMs: sendSw.elapsedMicroseconds / 1000.0,
+        isolateReceiveMs: receiveSw.elapsedMicroseconds / 1000.0,
+        error: result.error,
+      );
+    });
   }
 
   void dispose() {

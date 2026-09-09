@@ -54,11 +54,15 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
   double _confidence = 0.35;
   double _iou = 0.45;
   double _fps = 0;
-  double _preMs = 0;
+  double _yuvMs = 0;
+  double _letterboxMs = 0;
   double _inferMs = 0;
   double _postMs = 0;
+  double _isolateSendMs = 0;
+  double _isolateReceiveMs = 0;
   String _delegateName = '…';
   Map<String, double> _benchmarkMs = {};
+  Map<String, List<double>> _benchmarkPerCallMs = {};
   final List<DateTime> _frameTimes = [];
 
   @override
@@ -91,6 +95,15 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       if (bench is Map) {
         _benchmarkMs = bench.map(
           (k, v) => MapEntry(k.toString(), (v as num).toDouble()),
+        );
+      }
+      final benchPerCall = ready['benchmarkPerCallMs'];
+      if (benchPerCall is Map) {
+        _benchmarkPerCallMs = benchPerCall.map(
+          (k, v) => MapEntry(
+            k.toString(),
+            (v as List).map((e) => (e as num).toDouble()).toList(),
+          ),
         );
       }
 
@@ -166,9 +179,12 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       _crossingDetector.processFrame();
 
       _latestDetections = result.detections;
-      _preMs = result.preMs;
+      _yuvMs = result.yuvMs;
+      _letterboxMs = result.letterboxMs;
       _inferMs = result.inferMs;
       _postMs = result.postMs;
+      _isolateSendMs = result.isolateSendMs;
+      _isolateReceiveMs = result.isolateReceiveMs;
 
       _totalFrames++;
       _inferMsSum += result.inferMs;
@@ -182,7 +198,12 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
                 .reduce((a, b) => a > b ? a : b);
         _logger.logFrame(
           frameNumber: _totalFrames,
+          yuvMs: result.yuvMs,
+          letterboxMs: result.letterboxMs,
           inferMs: result.inferMs,
+          postMs: result.postMs,
+          isolateSendMs: result.isolateSendMs,
+          isolateReceiveMs: result.isolateReceiveMs,
           rawCount: result.rawCount,
           filteredCount: result.detections.length,
           maxConfidence: maxConf,
@@ -483,6 +504,8 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
   }
 
   Widget _buildHudPanel() {
+    final totalMs = _yuvMs + _letterboxMs + _inferMs + _postMs +
+        _isolateSendMs + _isolateReceiveMs;
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -507,22 +530,43 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
                 ),
               ),
               Text(
-                '${_preMs.toStringAsFixed(1)}ms pre · '
-                '${_inferMs.toStringAsFixed(1)}ms inference · '
-                '${_postMs.toStringAsFixed(1)}ms post',
+                'TOTAL ${totalMs.toStringAsFixed(0)}ms',
                 style: const TextStyle(
-                  color: Colors.white70,
+                  color: Colors.cyanAccent,
                   fontSize: 11,
+                  fontWeight: FontWeight.bold,
                   fontFamily: 'monospace',
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 4),
+          // Staged timing breakdown
+          Text(
+            'yuv: ${_yuvMs.toStringAsFixed(1)}  '
+            'letterbox: ${_letterboxMs.toStringAsFixed(1)}  '
+            'infer: ${_inferMs.toStringAsFixed(1)}  '
+            'post: ${_postMs.toStringAsFixed(1)}',
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 10,
+              fontFamily: 'monospace',
+            ),
+          ),
+          Text(
+            'send: ${_isolateSendMs.toStringAsFixed(1)}  '
+            'recv: ${_isolateReceiveMs.toStringAsFixed(1)}',
+            style: const TextStyle(
+              color: Colors.white54,
+              fontSize: 10,
+              fontFamily: 'monospace',
+            ),
+          ),
           if (_benchmarkMs.isNotEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 4),
               child: Text(
-                'benchmark: ${_benchmarkMs.entries.map((e) => '${e.key} ${e.value.toStringAsFixed(1)}ms').join('  ·  ')}',
+                'benchmark avg: ${_benchmarkMs.entries.map((e) => '${e.key} ${e.value.toStringAsFixed(1)}ms').join('  ·  ')}',
                 style: const TextStyle(
                   color: Colors.white38,
                   fontSize: 10,
@@ -530,6 +574,18 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
                 ),
               ),
             ),
+          if (_benchmarkPerCallMs.isNotEmpty)
+            ..._benchmarkPerCallMs.entries.map((e) => Padding(
+                  padding: const EdgeInsets.only(top: 2),
+                  child: Text(
+                    '${e.key}: [${e.value.map((v) => v.toStringAsFixed(0)).join(', ')}]',
+                    style: const TextStyle(
+                      color: Colors.white30,
+                      fontSize: 9,
+                      fontFamily: 'monospace',
+                    ),
+                  ),
+                )),
           _buildHudSlider(
             label: 'Conf ${_confidence.toStringAsFixed(2)}',
             value: _confidence,

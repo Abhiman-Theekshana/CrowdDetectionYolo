@@ -47,12 +47,26 @@ class SessionLogger {
 
   void logFrame({
     required int frameNumber,
+    required double yuvMs,
+    required double letterboxMs,
     required double inferMs,
+    required double postMs,
+    required double isolateSendMs,
+    required double isolateReceiveMs,
     required int rawCount,
     required int filteredCount,
     required double maxConfidence,
   }) {
-    log('FRAME #$frameNumber — infer: ${inferMs.toStringAsFixed(1)}ms, '
+    final total = yuvMs + letterboxMs + inferMs + postMs +
+        isolateSendMs + isolateReceiveMs;
+    log('FRAME #$frameNumber — '
+        'yuv: ${yuvMs.toStringAsFixed(1)}ms, '
+        'letterbox: ${letterboxMs.toStringAsFixed(1)}ms, '
+        'infer: ${inferMs.toStringAsFixed(1)}ms, '
+        'post: ${postMs.toStringAsFixed(1)}ms, '
+        'send: ${isolateSendMs.toStringAsFixed(1)}ms, '
+        'recv: ${isolateReceiveMs.toStringAsFixed(1)}ms, '
+        'TOTAL: ${total.toStringAsFixed(1)}ms | '
         'raw: $rawCount, filtered: $filteredCount, '
         'maxConf: ${maxConfidence.toStringAsFixed(3)}');
   }

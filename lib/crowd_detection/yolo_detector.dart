@@ -20,14 +20,14 @@ class LetterboxResult {
 class StagedInference {
   final List<Detection> detections;
   final int rawCount;
-  final double preMs;
+  final double letterboxMs;
   final double inferMs;
   final double postMs;
 
   const StagedInference({
     required this.detections,
     required this.rawCount,
-    required this.preMs,
+    required this.letterboxMs,
     required this.inferMs,
     required this.postMs,
   });
@@ -46,6 +46,10 @@ class YoloDetector {
   /// Average inference ms per delegate from the last benchmark run
   /// (only populated by [loadModelWithBenchmark]).
   Map<String, double> benchmarkMs = {};
+
+  /// Individual call times (ms) per delegate from the last benchmark run.
+  /// Keyed by delegate name, value is a list of per-call timings in order.
+  Map<String, List<double>> benchmarkPerCallMs = {};
 
   // Letterbox geometry of the last preprocessed frame, for mapping
   // detection boxes from padded-image space back to original-frame space.
@@ -130,6 +134,7 @@ class YoloDetector {
   Future<void> loadModelWithBenchmark(Uint8List modelBytes) async {
     const candidates = ['gpu-fp16', 'nnapi', 'cpu'];
     final timings = <String, double>{};
+    final perCallTimings = <String, List<double>>{};
     Interpreter? best;
     String bestName = 'cpu';
 
@@ -139,8 +144,9 @@ class YoloDetector {
       Interpreter? candidate;
       try {
         candidate = Interpreter.fromBuffer(modelBytes, options: options);
-        final avgMs = _timeDummyRuns(candidate, runs: 3);
+        final (avgMs, perCall) = _timeDummyRuns(candidate, runs: 3);
         timings[name] = avgMs;
+        perCallTimings[name] = perCall;
         if (best == null || avgMs < timings[bestName]!) {
           best?.close();
           best = candidate;
@@ -160,13 +166,17 @@ class YoloDetector {
     _interpreter = best;
     activeDelegate = bestName;
     benchmarkMs = timings;
+    benchmarkPerCallMs = perCallTimings;
     _readInputSize();
     _isLoaded = true;
   }
 
-  /// Runs [runs] timed dummy inferences (after 1 warmup) and returns the
-  /// average inference time in milliseconds.
-  double _timeDummyRuns(Interpreter interpreter, {int runs = 3}) {
+  /// Warms up the delegate with a throwaway call, then runs [runs] timed
+  /// inferences and returns (averageMs, perCallMs).
+  (double, List<double>) _timeDummyRuns(
+    Interpreter interpreter, {
+    int runs = 3,
+  }) {
     final inputShape = interpreter.getInputTensor(0).shape;
     final inputSize = inputShape.reduce((a, b) => a * b);
     final input = Float32List(inputSize).reshape(inputShape);
@@ -175,13 +185,21 @@ class YoloDetector {
     final outputSize = outputShape.reduce((a, b) => a * b);
     final output = List.filled(outputSize, 0.0).reshape(outputShape);
 
-    interpreter.run(input, output); // warmup (delegate compilation etc.)
-    final sw = Stopwatch()..start();
+    // Throwaway warm-up call — absorbs shader/driver compilation cost.
+    interpreter.run(input, output);
+
+    final perCall = <double>[];
     for (int i = 0; i < runs; i++) {
+      final sw = Stopwatch()..start();
       interpreter.run(input, output);
+      sw.stop();
+      perCall.add(sw.elapsedMicroseconds / 1000.0);
     }
-    sw.stop();
-    return sw.elapsedMicroseconds / 1000.0 / runs;
+
+    final avg = perCall.isEmpty
+        ? 0.0
+        : perCall.reduce((a, b) => a + b) / perCall.length;
+    return (avg, perCall);
   }
 
   LetterboxResult letterboxResize(img.Image image, int targetSize) {
@@ -310,32 +328,33 @@ class YoloDetector {
   }
 
   /// Runs the full pipeline on an already-decoded image and reports per-stage
-  /// timings (pre / inference / post) in milliseconds.
+  /// timings (letterbox / inference / postprocessing) in milliseconds.
+  /// Note: YUV→RGB conversion is timed separately in the worker isolate.
   StagedInference runInferenceFromImage(img.Image image) {
-    final pre = Stopwatch()..start();
+    final letterboxSw = Stopwatch()..start();
     final inputBuffer = preprocessImage(image);
     final inputShape = _interpreter!.getInputTensor(0).shape;
     final input = inputBuffer.reshape(inputShape);
-    pre.stop();
+    letterboxSw.stop();
 
     final outputShape = _interpreter!.getOutputTensor(0).shape;
     final outputSize = outputShape.reduce((a, b) => a * b);
     final output = List.filled(outputSize, 0.0).reshape(outputShape);
 
-    final infer = Stopwatch()..start();
+    final inferSw = Stopwatch()..start();
     _interpreter!.run(input, output);
-    infer.stop();
+    inferSw.stop();
 
-    final post = Stopwatch()..start();
+    final postSw = Stopwatch()..start();
     final (rawCount, detections) = _parseOutput(output, outputShape);
-    post.stop();
+    postSw.stop();
 
     return StagedInference(
       detections: detections,
       rawCount: rawCount,
-      preMs: pre.elapsedMicroseconds / 1000.0,
-      inferMs: infer.elapsedMicroseconds / 1000.0,
-      postMs: post.elapsedMicroseconds / 1000.0,
+      letterboxMs: letterboxSw.elapsedMicroseconds / 1000.0,
+      inferMs: inferSw.elapsedMicroseconds / 1000.0,
+      postMs: postSw.elapsedMicroseconds / 1000.0,
     );
   }
 
