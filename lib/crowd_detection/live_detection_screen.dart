@@ -680,8 +680,10 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
   }
 
   Widget _buildControlPanel() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+    return Wrap(
+      alignment: WrapAlignment.center,
+      spacing: 8,
+      runSpacing: 8,
       children: [
         ElevatedButton.icon(
           onPressed: _sessionEnded ? null : _resetCounters,
@@ -690,7 +692,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
           style: ElevatedButton.styleFrom(
             backgroundColor: Colors.orange,
             foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           ),
         ),
         ElevatedButton.icon(
@@ -700,7 +702,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
           style: ElevatedButton.styleFrom(
             backgroundColor: _showHud ? Colors.cyan[700] : Colors.grey[800],
             foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
           ),
         ),
         if (_sessionEnded && _logFile != null)
@@ -711,7 +713,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.teal,
               foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             ),
           )
         else
@@ -722,7 +724,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.red,
               foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             ),
           ),
         if (_sessionEnded)
@@ -733,7 +735,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
             style: ElevatedButton.styleFrom(
               backgroundColor: Colors.grey[700],
               foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
             ),
           ),
       ],
