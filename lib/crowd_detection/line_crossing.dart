@@ -27,7 +27,7 @@ class LineCrossingDetector {
 
   void processFrame() {
     for (final person in tracker.trackedPersons) {
-      final currentSide = person.lastCentroidY < linePosition ? 'outside' : 'inside';
+      final currentSide = person.centerY < linePosition ? 'outside' : 'inside';
 
       if (person.lastSide == null) {
         // First observation establishes the confirmed side immediately.

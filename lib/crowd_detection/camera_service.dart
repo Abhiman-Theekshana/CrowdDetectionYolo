@@ -72,7 +72,7 @@ class CameraService {
   /// 3. If not found, fall back to the default back camera and set zoom to the
   ///    device's minimum zoom level (near 0.6x on the S22).
   Future<void> startCamera({
-    ResolutionPreset resolution = ResolutionPreset.low,
+    ResolutionPreset resolution = ResolutionPreset.high,
     bool useUltraWide = false,
   }) async {
     if (_cameras.isEmpty) return;
@@ -174,7 +174,7 @@ class CameraService {
 
   /// Restarts the camera with a new ultra-wide setting.
   Future<void> restartCamera({
-    ResolutionPreset resolution = ResolutionPreset.low,
+    ResolutionPreset resolution = ResolutionPreset.high,
     bool useUltraWide = false,
   }) async {
     stopCamera();

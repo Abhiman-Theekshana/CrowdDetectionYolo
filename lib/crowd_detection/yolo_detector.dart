@@ -559,4 +559,6 @@ class Detection {
 
   double get centerX => (left + right) / 2;
   double get centerY => (top + bottom) / 2;
+  double get width => right - left;
+  double get height => bottom - top;
 }

@@ -5,8 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:share_plus/share_plus.dart';
 import 'person_tracker.dart';
+import '../models/tracked_person.dart';
 import 'line_crossing.dart';
-import 'yolo_detector.dart';
 import 'camera_service.dart';
 import 'detection_isolate.dart';
 import 'session_logger.dart';
@@ -31,9 +31,9 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
 
   bool _isDetecting = false;
   bool _frameInFlight = false;
+  RawCameraFrame? _latestPendingFrame;
   bool _workerReady = false;
   String _selectedDoor = 'Front';
-  List<Detection> _latestDetections = [];
   String? _errorMessage;
 
   // Session logging.
@@ -148,7 +148,12 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
   void _startDetection() {
     _isDetecting = true;
     _cameraService.frameStream.listen((RawCameraFrame frame) {
-      if (!_isDetecting || !_workerReady || _frameInFlight) return;
+      if (!_isDetecting || !_workerReady) return;
+      if (_frameInFlight) {
+        // Buffer only the latest frame — discard intermediate ones.
+        _latestPendingFrame = frame;
+        return;
+      }
       _processFrame(frame);
     });
   }
@@ -178,7 +183,6 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       _tracker.update(result.detections, roi: doorwayRoi);
       _crossingDetector.processFrame();
 
-      _latestDetections = result.detections;
       _yuvMs = result.yuvMs;
       _letterboxMs = result.letterboxMs;
       _inferMs = result.inferMs;
@@ -224,13 +228,18 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
       debugPrint('Frame processing error: $e');
     } finally {
       _frameInFlight = false;
+      // Process the latest buffered frame if one arrived during inference.
+      final next = _latestPendingFrame;
+      if (next != null && _isDetecting && _workerReady) {
+        _latestPendingFrame = null;
+        _processFrame(next);
+      }
     }
   }
 
   void _resetCounters() {
     _tracker.reset();
     _crossingDetector.reset();
-    _latestDetections = [];
     setState(() {});
   }
 
@@ -389,7 +398,7 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
               size: Size.infinite,
               painter: _OverlayPainter(
                 linePosition: _crossingDetector.linePosition,
-                detections: _latestDetections,
+                trackedPersons: _tracker.trackedPersons,
               ),
             ),
 
@@ -745,9 +754,9 @@ class _LiveDetectionScreenState extends State<LiveDetectionScreen> {
 
 class _OverlayPainter extends CustomPainter {
   final double linePosition;
-  final List<Detection> detections;
+  final List<TrackedPerson> trackedPersons;
 
-  _OverlayPainter({required this.linePosition, required this.detections});
+  _OverlayPainter({required this.linePosition, required this.trackedPersons});
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -843,19 +852,18 @@ class _OverlayPainter extends CustomPainter {
       ..color = Colors.greenAccent.withValues(alpha: 0.18)
       ..style = PaintingStyle.fill;
 
-    for (final det in detections) {
-      final rect = Rect.fromLTRB(
-        det.left * size.width,
-        det.top * size.height,
-        det.right * size.width,
-        det.bottom * size.height,
-      );
+    for (final person in trackedPersons) {
+      final cx = person.centerX * size.width;
+      final cy = person.centerY * size.height;
+      final hw = person.boxWidth * size.width / 2;
+      final hh = person.boxHeight * size.height / 2;
+      final rect = Rect.fromLTRB(cx - hw, cy - hh, cx + hw, cy + hh);
       canvas.drawRect(rect, fillPaint);
       canvas.drawRect(rect, boxPaint);
 
       final labelPainter = TextPainter(
         text: TextSpan(
-          text: 'Person ${(det.confidence * 100).toInt()}%',
+          text: 'P${person.id} ${(person.confidence * 100).toInt()}%',
           style: const TextStyle(
             color: Colors.white,
             fontSize: 11,
